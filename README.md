@@ -20,9 +20,9 @@ All of the C/C++ code are in `src` folder.
 ## Linux Instructions
 
 To build a basic project, navigate to the `multiple-edgetpu-demo` folder and 
-run `bazel build src:hello-world`.
+run `bazel build src:multiple_edgetpu_demo`.
 
 Once bazel builds the project successfully, run the program 
-`./bazel-bin/src/hello-world <absolute URI to video file>`.
+`./bazel-bin/src/multiple_edgetpu_demo <absolute URI to video file>`.
 
 To clean the project, run `bazel clean`.

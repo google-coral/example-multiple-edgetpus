@@ -1,6 +1,6 @@
 cc_binary(
-    name = "gst_demo",
-    srcs = ["gst_demo.c"],
+    name = "multiple_edgetpu_demo",
+    srcs = ["multiple_edgetpu_demo.c"],
     deps = [
         "@local_gst//:gstreamer",
     ],

@@ -2,12 +2,12 @@
 #include <string>
 
 // To run this file
-//    1) Build the file with: build bazel path/to/folder:hello-gst
+//    1) Build the file with: bazel build src:multiple_edgetpu_demo
 //    2) Run: path/to/executable path/to/video
 // NOTE: you must enter the absolute URI for a local video file
 
 int main(int argc, char *argv[]) {
-  int kNumArgs = 2;
+  const int kNumArgs = 2;
 
   if (argc != kNumArgs) {
     g_print("Usage: <path to gst binary> <video uri>\n");
@@ -15,8 +15,8 @@ int main(int argc, char *argv[]) {
   }
 
   // Creating video path
-  std::string user_input = argv[1];
-  std::string video_path = "playbin uri=" + user_input;
+  const std::string user_input = argv[1];
+  const std::string video_path = "playbin uri=" + user_input;
 
   // Initialize GStreamer
   gst_init(NULL, NULL);

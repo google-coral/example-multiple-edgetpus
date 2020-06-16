@@ -1,3 +1,7 @@
+package(
+    default_visibility = ["//visibility:public"],
+)
+
 cc_library(
     name = "gstreamer",
     srcs = [
@@ -5,7 +9,6 @@ cc_library(
     ],
     hdrs = glob(["usr/include/gstreamer-1.0/gst/*.h"]),
     includes = ["usr/include/gstreamer-1.0"],
-    visibility = ["//visibility:public"],
     deps = [
         ":glib",
     ],
@@ -31,5 +34,4 @@ cc_library(
         "usr/include/glib-2.0/glib/deprecated",
         "usr/lib/x86_64-linux-gnu/glib-2.0/include",
     ],
-    visibility = ["//visibility:public"],
 )

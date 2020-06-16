@@ -1,7 +1,7 @@
 #Multiple Edge TPU Demo Example(C / C++)
 
 This example shows how build and run a program that will run inferences on a
-video with multiple edge tpus.
+video with multiple Edge TPUs.
 
 ## Requirements
 

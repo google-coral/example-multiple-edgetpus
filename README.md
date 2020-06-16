@@ -1,4 +1,4 @@
-#Multiple Edge TPU Demo Example(C / C++)
+# Multiple Edge TPU Demo Example(C / C++)
 
 This example shows how build and run a program that will run inferences on a
 video with multiple Edge TPUs.

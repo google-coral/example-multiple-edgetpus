@@ -26,15 +26,3 @@ Once bazel builds the project successfully, run the program
 `./bazel-bin/src/multiple_edgetpu_demo <absolute URI to video file>`.
 
 To clean the project, run `bazel clean`.
-
-## Docker Set-Up
-
-You will need to install docker on your computer first to run the project with
-docker or docker-shell.
-
-To run and compile the project inside docker, launch docker-shell by entering
-`make DOCKER_IMAGE=debian:buster DOCKER_CPUS="aarch64" docker-shell`. Once the
-docker-shell has been setup, enter `make CPU=k8 examples` to compile and build
-the project. Open a new terminal when the project is finished building, and
-navigate to the `multiple_edgetpu_demo` folder and run `out/k8/examples/binary`
-and the appropriate command line arguments for the project. 

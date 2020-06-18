@@ -15,7 +15,7 @@ SHELL := /bin/bash
 MAKEFILE_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
 OS := $(shell uname -s)
 
-# Allowed CPU values: k8, aarch64
+# Allowed CPU values: k8
 ifeq ($(OS),Linux)
 CPU ?= k8
 else
@@ -69,7 +69,6 @@ endef
 
 EXAMPLES_OUT_DIR    := $(MAKEFILE_DIR)/out/$(CPU)/examples
 
-# add make targets later
 examples:
 	bazel build $(BAZEL_BUILD_FLAGS) //src:multiple_edgetpu_demo
 	mkdir -p $(EXAMPLES_OUT_DIR)

@@ -1,7 +1,7 @@
 DOCKER_MK_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
 
 # Docker
-DOCKER_CPUS ?= k8 armv7a armv6 aarch64
+DOCKER_CPUS ?= k8 aarch64
 DOCKER_TARGETS ?=
 DOCKER_IMAGE ?= debian:buster
 DOCKER_TAG_BASE ?= "bazel-cross"

@@ -15,14 +15,14 @@ SHELL := /bin/bash
 MAKEFILE_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
 OS := $(shell uname -s)
 
-# Allowed CPU values: k8
+# Allowed CPU values: k8, aarch64
 ifeq ($(OS),Linux)
 CPU ?= k8
 else
 $(error $(OS) is not supported)
 endif
-ifeq ($(filter $(CPU),k8),)
-$(error CPU must be k8)
+ifeq ($(filter $(CPU),k8 aarch64),)
+$(error CPU must be k8 or aarch64)
 endif
 
 # Allowed COMPILATION_MODE values: opt, dbg
@@ -43,6 +43,8 @@ endif
 
 ifeq ($(CPU),k8)
 BAZEL_BUILD_FLAGS_Linux += --copt=-includeglibc_compat.h
+else ifeq ($(CPU),aarch64)
+BAZEL_BUILD_FLAGS_Linux += --copt=-ffp-contract=off
 endif
 
 BAZEL_BUILD_FLAGS := --compilation_mode=$(COMPILATION_MODE) \
@@ -80,6 +82,6 @@ clean:
 	       $(MAKEFILE_DIR)/out \
 
 DOCKER_WORKSPACE=$(MAKEFILE_DIR)
-DOCKER_CPUS=k8
+DOCKER_CPUS=k8 aarch64
 DOCKER_TAG_BASE=coral-edgetpu
 include $(MAKEFILE_DIR)/docker/docker.mk

@@ -20,7 +20,10 @@
 //    1) Build the file with: bazel build src:multiple_edgetpu_demo
 //    2) Run: path/to/executable path/to/video
 
-// getting the frame data for each new frame
+// Function called on every new available sample and reads each frame data.
+// Needs an appsink in the pipeline in order to work.
+// The output of the function is simply a flow status.
+// No input necessary.
 GstFlowReturn OnNewSample(GstElement *sink) {
   GstFlowReturn retval = GST_FLOW_OK;
   // getting a sample from the sink
@@ -44,7 +47,9 @@ GstFlowReturn OnNewSample(GstElement *sink) {
   return retval;
 }
 
-// receiving and reading message from bus
+// Function reads messages as they become available from the stream and
+// terminate if necessary.
+// No input needed, treat as callback variable in gst_bus_add_watch.
 gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
   GMainLoop *loop = reinterpret_cast<GMainLoop *>(data);
 

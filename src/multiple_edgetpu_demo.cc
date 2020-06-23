@@ -22,8 +22,8 @@
 
 // Function called on every new available sample and reads each frame data.
 // Needs an appsink in the pipeline in order to work.
-// The output of the function is simply a flow status.
-// No input necessary.
+// Input: GstElement
+// Output: GstFlow value (OK or ERROR)
 GstFlowReturn OnNewSample(GstElement *sink) {
   GstFlowReturn retval = GST_FLOW_OK;
   // getting a sample from the sink
@@ -37,6 +37,7 @@ GstFlowReturn OnNewSample(GstElement *sink) {
     // reading buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       std::cout << "size of frame map: " << info.size << std::endl;
+      // TODO: run inference on frame data (info.data)
     } else {
       g_printerr("Error: Couldn't get buffer info\n");
       retval = GST_FLOW_ERROR;
@@ -49,7 +50,8 @@ GstFlowReturn OnNewSample(GstElement *sink) {
 
 // Function reads messages as they become available from the stream and
 // terminate if necessary.
-// No input needed, treat as callback variable in gst_bus_add_watch.
+// Inputs: GstBus, GstMessage, and gpointer
+// Output: gboolean (only FALSE when error or warning encountered)
 gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
   GMainLoop *loop = reinterpret_cast<GMainLoop *>(data);
 

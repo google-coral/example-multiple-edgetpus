@@ -29,21 +29,17 @@
 GstFlowReturn OnNewSample(GstElement *sink,
                           coral::ClassificationEngine *engine) {
   GstFlowReturn retval = GST_FLOW_OK;
-  // getting a sample from the sink
+  // Retrieve sample from sink
   GstSample *sample;
   g_signal_emit_by_name(sink, "pull-sample", &sample);
   if (sample) {
     GstMapInfo info;
-    // getting the buffer from the sample
+    // Read buffer from sample
     GstBuffer *buffer = gst_sample_get_buffer(sample);
-    // reading buffer into mapinfo
+    // Reading buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
-      // create a vector of uint8_t copy of the frame data
-      uint8_t *frame_data = info.data;
-      std::vector<uint8_t> input_tensor(info.size);
-      for (unsigned int i = 0; i < info.size; i++) {
-        input_tensor[i] = frame_data[i];
-      }
+      // Create a vector of uint8_t copy of the frame data
+      std::vector<uint8_t> input_tensor(info.data, info.data+info.size);
       auto results = engine->ClassifyWithInputTensor(input_tensor);
       std::cout << "Printing inference results" << std::endl;
       for (auto result : results) {
@@ -51,7 +47,7 @@ GstFlowReturn OnNewSample(GstElement *sink,
         std::cout << "Result id " << result.id << std::endl;
         std::cout << "Score: " << result.score << std::endl;
       }
-      std::cout << "-----------------------------" << std::endl;
+      std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
     } else {
       g_printerr("Error: Couldn't get buffer info\n");
       retval = GST_FLOW_ERROR;

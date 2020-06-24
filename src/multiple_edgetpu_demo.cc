@@ -39,8 +39,9 @@ GstFlowReturn OnNewSample(GstElement *sink,
     // Reading buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       // Create a vector of uint8_t copy of the frame data
-      std::vector<uint8_t> input_tensor(info.data, info.data+info.size);
+      std::vector<uint8_t> input_tensor(info.data, info.data + info.size);
       auto results = engine->ClassifyWithInputTensor(input_tensor);
+      // TODO (Jane): load labels file and print label for each result
       std::cout << "Printing inference results" << std::endl;
       for (auto result : results) {
         std::cout << "---------------------------" << std::endl;

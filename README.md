@@ -17,12 +17,14 @@ and [Bazel](https://docs.bazel.build/versions/master/install.html) to run the pr
 
 All of the C/C++ code are in `src` folder.
 
-## Linux Instructions
+## Docker Set-Up
 
-To build a basic project, navigate to the `multiple-edgetpu-demo` folder and 
-run `bazel build src:multiple_edgetpu_demo`.
+You will need to install docker on your computer first to run the project with
+docker or docker-shell.
 
-Once bazel builds the project successfully, run the program 
-`./bazel-bin/src/multiple_edgetpu_demo <absolute URI to video file>`.
-
-To clean the project, run `bazel clean`.
+To run and compile the project inside docker, launch docker-shell by entering
+`make DOCKER_IMAGE=debian:buster DOCKER_CPUS="aarch64" docker-shell`. Once the
+docker-shell has been setup, enter `make CPU=aarch64 examples` to compile and build
+the project. Open a new terminal when the project is finished building, the binary
+should be in `out/aarch64/examples/` directory. In order to run the project, you
+must be connected to a Coral Dev Board and copy the binary over.

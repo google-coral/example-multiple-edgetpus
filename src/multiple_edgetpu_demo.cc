@@ -15,16 +15,19 @@
 #include <gst/gst.h>
 #include <iostream>
 #include <string>
+#include <vector>
+#include "src/cpp/classification/engine.h"
 
 // To run this file
 //    1) Build the file with: bazel build src:multiple_edgetpu_demo
 //    2) Run: path/to/executable path/to/video
 
-// Function called on every new available sample and reads each frame data.
-// Needs an appsink in the pipeline in order to work.
-// The output of the function is simply a flow status.
-// No input necessary.
-GstFlowReturn OnNewSample(GstElement *sink) {
+// Function called on every new available sample, reads each frame data, and
+// runs an inference on each frame, printing the result id and scores. Needs an
+// appsink in the pipeline in order to work. Input: GstElement and
+// ClassificationEngine Output: GstFlow value (OK or ERROR)
+GstFlowReturn OnNewSample(GstElement *sink,
+                          coral::ClassificationEngine *engine) {
   GstFlowReturn retval = GST_FLOW_OK;
   // getting a sample from the sink
   GstSample *sample;
@@ -33,10 +36,22 @@ GstFlowReturn OnNewSample(GstElement *sink) {
     GstMapInfo info;
     // getting the buffer from the sample
     GstBuffer *buffer = gst_sample_get_buffer(sample);
-
     // reading buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
-      std::cout << "size of frame map: " << info.size << std::endl;
+      // create a vector of uint8_t copy of the frame data
+      uint8_t *frame_data = info.data;
+      std::vector<uint8_t> input_tensor(info.size);
+      for (unsigned int i = 0; i < info.size; i++) {
+        input_tensor[i] = frame_data[i];
+      }
+      auto results = engine->ClassifyWithInputTensor(input_tensor);
+      std::cout << "Printing inference results" << std::endl;
+      for (auto result : results) {
+        std::cout << "---------------------------" << std::endl;
+        std::cout << "Result id " << result.id << std::endl;
+        std::cout << "Score: " << result.score << std::endl;
+      }
+      std::cout << "-----------------------------" << std::endl;
     } else {
       g_printerr("Error: Couldn't get buffer info\n");
       retval = GST_FLOW_ERROR;
@@ -49,7 +64,8 @@ GstFlowReturn OnNewSample(GstElement *sink) {
 
 // Function reads messages as they become available from the stream and
 // terminate if necessary.
-// No input needed, treat as callback variable in gst_bus_add_watch.
+// Inputs: GstBus, GstMessage, and gpointer
+// Output: gboolean (only FALSE when error or warning encountered)
 gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
   GMainLoop *loop = reinterpret_cast<GMainLoop *>(data);
 
@@ -81,12 +97,16 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
 }
 
 int main(int argc, char *argv[]) {
-  const int kNumArgs = 2;
+  const int kNumArgs = 3;
 
   if (argc != kNumArgs) {
-    g_print("Usage: <binary path> <video file path>\n");
+    g_print("Usage: <binary path> <video file path> <model file path>\n");
     return -1;
   }
+
+  // creating classification engine
+  const std::string model_path = argv[2];
+  coral::ClassificationEngine engine(model_path);
 
   // Creating pipeline
   const std::string user_input = argv[1];
@@ -114,7 +134,7 @@ int main(int argc, char *argv[]) {
     printf("Sink exists\n");
   }
   g_signal_connect(sink, "new-sample", reinterpret_cast<GCallback>(OnNewSample),
-                   nullptr);
+                   &engine);
 
   // Start the pipeline, runs until interrupted, EOS or error
   gst_element_set_state(pipeline, GST_STATE_PLAYING);

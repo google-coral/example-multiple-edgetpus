@@ -17,5 +17,8 @@ cc_binary(
     srcs = ["multiple_edgetpu_demo.cc"],
     deps = [
         "@local_gst//:gstreamer",
+        "@edgetpu//libedgetpu:header",
+        "@edgetpu//src/cpp/classification:engine",
     ],
+    copts = ["-Iexternal/edgetpu/libedgetpu"],
 )

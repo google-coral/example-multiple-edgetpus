@@ -36,7 +36,7 @@ GstFlowReturn OnNewSample(GstElement *sink,
     GstMapInfo info;
     // Read buffer from sample
     GstBuffer *buffer = gst_sample_get_buffer(sample);
-    // Reading buffer into mapinfo
+    // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       // Create a vector of uint8_t copy of the frame data
       std::vector<uint8_t> input_tensor(info.data, info.data + info.size);
@@ -101,11 +101,11 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  // creating classification engine
+  // Create classification engine
   const std::string model_path = argv[2];
   coral::ClassificationEngine engine(model_path);
 
-  // Creating pipeline
+  // Create pipeline
   const std::string user_input = argv[1];
   const std::string pipeline_src =
       "filesrc location=" + user_input +

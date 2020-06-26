@@ -19,6 +19,6 @@ cc_binary(
         "@local_gst//:gstreamer",
         "@libedgetpu//:header",
         "@org_tensorflow//tensorflow/lite:framework",
-        "@edgetpu//src/cpp/classification:engine",
+        "@org_tensorflow//tensorflow/lite/kernels:builtin_ops",
     ],
 )

@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// To run this file
+//    1) Build the file with: make CPU=aarch64 examples
+//    2) Run: path/to/executable path/to/video path/to/model_file
+
 #include <gst/gst.h>
 #include <iostream>
 #include <string>
 #include <vector>
 #include "edgetpu.h"
-#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/interpreter.h"  
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
-
-// To run this file
-//    1) Build the file with: make CPU=aarch64 examples
-//    2) Run: path/to/executable path/to/video path/to/model_file
 
 // Function that setsup and builds the interpreter for interencing
 // Inputs: FlatBufferModel and EdgeTpuContext
@@ -33,13 +33,13 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
   tflite::ops::builtin::BuiltinOpResolver resolver;
   // Register custom op for edge tpu
   resolver.AddCustom(edgetpu::kCustomOp, edgetpu::RegisterCustomOp());
-  // Builds an interpreter with given model
+  // Build an interpreter with given model
   tflite::InterpreterBuilder builder(model.GetModel(), resolver);
   std::unique_ptr<tflite::Interpreter> interpreter;
   if (builder(&interpreter) == kTfLiteOk) {
-    printf("Successfully built interpreter!\n");
+    std::cout << "Successfully built interpreter!\n";
   } else {
-    printf("Error: Cannot build interpreter\n");
+   std::cout << "Error: Cannot build interpreter\n";
   }
   // Add edge tpu as external context to interpreter
   interpreter->SetExternalContext(kTfLiteEdgeTpuContext, context);
@@ -50,7 +50,7 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
 // Function called on every new available sample, reads each frame data, and
 // runs an inference on each frame, printing the result id and scores. Needs an
 // appsink in the pipeline in order to work.
-// Inputs: GstElement and ClassificationEngine
+// Inputs: GstElement and tflite::Interpreter
 // Output: GstFlow value (OK or ERROR)
 GstFlowReturn OnNewSample(GstElement *sink, tflite::Interpreter *interpreter) {
   GstFlowReturn retval = GST_FLOW_OK;
@@ -65,28 +65,26 @@ GstFlowReturn OnNewSample(GstElement *sink, tflite::Interpreter *interpreter) {
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       // Allocate input tensor and copy mapinfo data over
       uint8_t *input_tensor = interpreter->typed_input_tensor<uint8_t>(0);
-      memcpy(input_tensor, info.data, info.size);
+      std::memcpy(input_tensor, info.data, info.size);
       // Run inference on input tensor
       if (interpreter->Invoke() != kTfLiteOk) {
-        printf("ERROR: Invoke did not work\n");
+        std::cout << "ERROR: Invoke did not work\n";
       } else {
-        printf("Success in invoking\n");
+        std::cout << "Success in invoking\n";
       }
       // Retrieve output tensor
       uint8_t *output_tensor = interpreter->typed_output_tensor<uint8_t>(0);
       int output_index = interpreter->outputs()[0];
       TfLiteTensor *out_tensor = interpreter->tensor(output_index);
-      int num = out_tensor->bytes;
-      std::vector<float> inference_result(num);
-      int out_index = 0;
+      std::vector<float> inference_result(out_tensor->bytes);
       // Dequantize output tensor
-      for (int i = 0; i < num; i++) {
-        inference_result[out_index++] =
+      for (unsigned int i = 0; i < inference_result.size(); i++) {
+        inference_result[i] =
             (output_tensor[i] - out_tensor->params.zero_point) *
             out_tensor->params.scale;
       }
       // Print result of output tensor (all labels with a score > 0.1)
-      for (int i = 0; i < num; i++) {
+      for (unsigned int i = 0; i < inference_result.size(); i++) {
         if (inference_result[i] > 0.1) {
           std::cout << "-----------------------------------\n";
           std::cout << "Label id " << i << std::endl;
@@ -95,7 +93,7 @@ GstFlowReturn OnNewSample(GstElement *sink, tflite::Interpreter *interpreter) {
       }
       std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
     } else {
-      g_printerr("Error: Couldn't get buffer info\n");
+      std::cout << "Error: Couldn't get buffer info\n";
       retval = GST_FLOW_ERROR;
     }
     gst_buffer_unmap(buffer, &info);
@@ -157,7 +155,7 @@ int main(int argc, char *argv[]) {
   // Open available device
   auto tpu_context = edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice();
   std::unique_ptr<tflite::Interpreter> interpreter =
-      std::move(SetUpIntepreter(*(model), tpu_context.get()));
+      SetUpIntepreter(*(model), tpu_context.get());
 
   // Create pipeline
   const std::string user_input = argv[1];
@@ -181,9 +179,6 @@ int main(int argc, char *argv[]) {
   gst_object_unref(bus);
 
   auto *sink = gst_bin_get_by_name(GST_BIN(pipeline), "appsink");
-  if (sink) {
-    printf("Sink exists\n");
-  }
   g_signal_connect(sink, "new-sample", reinterpret_cast<GCallback>(OnNewSample),
                    interpreter.get());
 

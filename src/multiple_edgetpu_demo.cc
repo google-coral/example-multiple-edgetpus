@@ -16,18 +16,43 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include "src/cpp/classification/engine.h"
+#include "edgetpu.h"
+#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/kernels/register.h"
+#include "tensorflow/lite/model.h"
 
 // To run this file
-//    1) Build the file with: bazel build src:multiple_edgetpu_demo
-//    2) Run: path/to/executable path/to/video
+//    1) Build the file with: make CPU=aarch64 examples
+//    2) Run: path/to/executable path/to/video path/to/model_file
+
+// Function that setsup and builds the interpreter for interencing
+// Inputs: FlatBufferModel and EdgeTpuContext
+// Output: unique_ptr to tflite Interpreter
+std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
+    const tflite::FlatBufferModel &model, edgetpu::EdgeTpuContext *context) {
+  tflite::ops::builtin::BuiltinOpResolver resolver;
+  // Register custom op for edge tpu
+  resolver.AddCustom(edgetpu::kCustomOp, edgetpu::RegisterCustomOp());
+  // Builds an interpreter with given model
+  tflite::InterpreterBuilder builder(model.GetModel(), resolver);
+  std::unique_ptr<tflite::Interpreter> interpreter;
+  if (builder(&interpreter) == kTfLiteOk) {
+    printf("Successfully built interpreter!\n");
+  } else {
+    printf("Error: Cannot build interpreter\n");
+  }
+  // Add edge tpu as external context to interpreter
+  interpreter->SetExternalContext(kTfLiteEdgeTpuContext, context);
+  interpreter->AllocateTensors();
+  return interpreter;
+}
 
 // Function called on every new available sample, reads each frame data, and
 // runs an inference on each frame, printing the result id and scores. Needs an
-// appsink in the pipeline in order to work. Input: GstElement and
-// ClassificationEngine Output: GstFlow value (OK or ERROR)
-GstFlowReturn OnNewSample(GstElement *sink,
-                          coral::ClassificationEngine *engine) {
+// appsink in the pipeline in order to work.
+// Inputs: GstElement and ClassificationEngine
+// Output: GstFlow value (OK or ERROR)
+GstFlowReturn OnNewSample(GstElement *sink, tflite::Interpreter *interpreter) {
   GstFlowReturn retval = GST_FLOW_OK;
   // Retrieve sample from sink
   GstSample *sample;
@@ -38,17 +63,37 @@ GstFlowReturn OnNewSample(GstElement *sink,
     GstBuffer *buffer = gst_sample_get_buffer(sample);
     // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
-      // Create a vector of uint8_t copy of the frame data
-      std::vector<uint8_t> input_tensor(info.data, info.data + info.size);
-      auto results = engine->ClassifyWithInputTensor(input_tensor);
-      // TODO (Jane): load labels file and print label for each result
-      std::cout << "Printing inference results" << std::endl;
-      for (auto result : results) {
-        std::cout << "---------------------------" << std::endl;
-        std::cout << "Result id " << result.id << std::endl;
-        std::cout << "Score: " << result.score << std::endl;
+      // Allocate input tensor and copy mapinfo data over
+      uint8_t *input_tensor = interpreter->typed_input_tensor<uint8_t>(0);
+      memcpy(input_tensor, info.data, info.size);
+      // Run inference on input tensor
+      if (interpreter->Invoke() != kTfLiteOk) {
+        printf("ERROR: Invoke did not work\n");
+      } else {
+        printf("Success in invoking\n");
       }
-      std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+      // Retrieve output tensor
+      uint8_t *output_tensor = interpreter->typed_output_tensor<uint8_t>(0);
+      int output_index = interpreter->outputs()[0];
+      TfLiteTensor *out_tensor = interpreter->tensor(output_index);
+      int num = out_tensor->bytes;
+      std::vector<float> inference_result(num);
+      int out_index = 0;
+      // Dequantize output tensor
+      for (int i = 0; i < num; i++) {
+        inference_result[out_index++] =
+            (output_tensor[i] - out_tensor->params.zero_point) *
+            out_tensor->params.scale;
+      }
+      // Print result of output tensor (all labels with a score > 0.1)
+      for (int i = 0; i < num; i++) {
+        if (inference_result[i] > 0.1) {
+          std::cout << "-----------------------------------\n";
+          std::cout << "Label id " << i << std::endl;
+          std::cout << "Score: " << inference_result[i] << std::endl;
+        }
+      }
+      std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
     } else {
       g_printerr("Error: Couldn't get buffer info\n");
       retval = GST_FLOW_ERROR;
@@ -103,7 +148,16 @@ int main(int argc, char *argv[]) {
 
   // Create classification engine
   const std::string model_path = argv[2];
-  coral::ClassificationEngine engine(model_path);
+  // Load model to memory
+  tflite::StderrReporter error_reporter;
+  auto model = tflite::FlatBufferModel::BuildFromFile(model_path.c_str(),
+                                                      &error_reporter);
+  // Setup edge tpu context
+  auto all_tpus = edgetpu::EdgeTpuManager::GetSingleton()->EnumerateEdgeTpu();
+  // Open available device
+  auto tpu_context = edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice();
+  std::unique_ptr<tflite::Interpreter> interpreter =
+      std::move(SetUpIntepreter(*(model), tpu_context.get()));
 
   // Create pipeline
   const std::string user_input = argv[1];
@@ -131,7 +185,7 @@ int main(int argc, char *argv[]) {
     printf("Sink exists\n");
   }
   g_signal_connect(sink, "new-sample", reinterpret_cast<GCallback>(OnNewSample),
-                   &engine);
+                   interpreter.get());
 
   // Start the pipeline, runs until interrupted, EOS or error
   gst_element_set_state(pipeline, GST_STATE_PLAYING);

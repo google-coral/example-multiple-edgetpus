@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include "edgetpu.h"
+#include "glog/logging.h"
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
@@ -33,17 +34,19 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
   tflite::ops::builtin::BuiltinOpResolver resolver;
   // Register custom op for edge TPU
   resolver.AddCustom(edgetpu::kCustomOp, edgetpu::RegisterCustomOp());
+
   // Build an interpreter with given model
   tflite::InterpreterBuilder builder(model.GetModel(), resolver);
   std::unique_ptr<tflite::Interpreter> interpreter;
-  if (builder(&interpreter) == kTfLiteOk) {
-    std::cout << "Successfully built interpreter!\n";
-  } else {
-    std::cout << "Error: Cannot build interpreter\n";
-  }
+  TfLiteStatus interpreter_build = builder(&interpreter);
+  CHECK(interpreter_build == kTfLiteOk) << "Error: Cannot build interpreter";
+
   // Add edge TPU as external context to interpreter
   interpreter->SetExternalContext(kTfLiteEdgeTpuContext, context);
   interpreter->AllocateTensors();
+  uint8_t *input_tensor = interpreter->typed_input_tensor<uint8_t>(0);
+  CHECK(input_tensor != nullptr)
+      << "Error: Model has incorrect input tensor type";
   return interpreter;
 }
 
@@ -53,6 +56,7 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
 // Inputs: GstElement and tflite::Interpreter
 // Output: GstFlow value (OK or ERROR)
 GstFlowReturn OnNewSample(GstElement *sink, tflite::Interpreter *interpreter) {
+  static int frame_count = 0;
   GstFlowReturn retval = GST_FLOW_OK;
   // Retrieve sample from sink
   GstSample *sample;
@@ -65,24 +69,31 @@ GstFlowReturn OnNewSample(GstElement *sink, tflite::Interpreter *interpreter) {
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       // Allocate input tensor and copy mapinfo data over
       uint8_t *input_tensor = interpreter->typed_input_tensor<uint8_t>(0);
+      CHECK(input_tensor != nullptr) << "Error: unable to get input tensor";
       std::memcpy(input_tensor, info.data, info.size);
+
       // Run inference on input tensor
-      if (interpreter->Invoke() != kTfLiteOk) {
-        std::cout << "ERROR: Invoke did not work\n";
-      } else {
-        std::cout << "Success in invoking\n";
-      }
+      TfLiteStatus invoke_status = interpreter->Invoke();
+      CHECK(invoke_status == kTfLiteOk) << "Error: Invoke was unsuccessful";
+
       // Retrieve output tensor
       uint8_t *output_tensor = interpreter->typed_output_tensor<uint8_t>(0);
+      CHECK(output_tensor != nullptr) << "Error: unable to get output tensor";
       int output_index = interpreter->outputs()[0];
       TfLiteTensor *out_tensor = interpreter->tensor(output_index);
+      CHECK(out_tensor != nullptr)
+          << "Error: unable to get output tflite tensor";
       std::vector<float> inference_result(out_tensor->bytes);
+
       // Dequantize output tensor
       for (unsigned int i = 0; i < inference_result.size(); i++) {
         inference_result[i] =
             (output_tensor[i] - out_tensor->params.zero_point) *
             out_tensor->params.scale;
       }
+      // Increment frame count
+      std::cout << "Frame " << frame_count << " inference results:\n";
+      ++frame_count;
       // Print result of output tensor (all labels with a score > 0.1)
       for (unsigned int i = 0; i < inference_result.size(); i++) {
         if (inference_result[i] > 0.1) {
@@ -144,12 +155,16 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  // Initialize Google's logging library.
+  google::InitGoogleLogging(argv[0]);
+
   // Create classification engine
   const std::string model_path = argv[2];
   // Load model to memory
   tflite::StderrReporter error_reporter;
   auto model = tflite::FlatBufferModel::BuildFromFile(model_path.c_str(),
                                                       &error_reporter);
+  CHECK(model != nullptr) << "Error: Unable to load model";
   // Setup edge TPU context
   auto all_tpus = edgetpu::EdgeTpuManager::GetSingleton()->EnumerateEdgeTpu();
   // Open available device

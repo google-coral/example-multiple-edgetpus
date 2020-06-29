@@ -20,5 +20,6 @@ cc_binary(
         "@libedgetpu//:header",
         "@org_tensorflow//tensorflow/lite:framework",
         "@org_tensorflow//tensorflow/lite/kernels:builtin_ops",
+        "@com_google_glog//:glog",
     ],
 )

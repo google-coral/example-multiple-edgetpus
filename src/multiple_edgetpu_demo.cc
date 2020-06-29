@@ -21,17 +21,17 @@
 #include <string>
 #include <vector>
 #include "edgetpu.h"
-#include "tensorflow/lite/interpreter.h"  
+#include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
 
-// Function that setsup and builds the interpreter for interencing
+// Function that sets up and builds the interpreter for inference
 // Inputs: FlatBufferModel and EdgeTpuContext
 // Output: unique_ptr to tflite Interpreter
 std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
     const tflite::FlatBufferModel &model, edgetpu::EdgeTpuContext *context) {
   tflite::ops::builtin::BuiltinOpResolver resolver;
-  // Register custom op for edge tpu
+  // Register custom op for edge TPU
   resolver.AddCustom(edgetpu::kCustomOp, edgetpu::RegisterCustomOp());
   // Build an interpreter with given model
   tflite::InterpreterBuilder builder(model.GetModel(), resolver);
@@ -39,9 +39,9 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
   if (builder(&interpreter) == kTfLiteOk) {
     std::cout << "Successfully built interpreter!\n";
   } else {
-   std::cout << "Error: Cannot build interpreter\n";
+    std::cout << "Error: Cannot build interpreter\n";
   }
-  // Add edge tpu as external context to interpreter
+  // Add edge TPU as external context to interpreter
   interpreter->SetExternalContext(kTfLiteEdgeTpuContext, context);
   interpreter->AllocateTensors();
   return interpreter;
@@ -150,7 +150,7 @@ int main(int argc, char *argv[]) {
   tflite::StderrReporter error_reporter;
   auto model = tflite::FlatBufferModel::BuildFromFile(model_path.c_str(),
                                                       &error_reporter);
-  // Setup edge tpu context
+  // Setup edge TPU context
   auto all_tpus = edgetpu::EdgeTpuManager::GetSingleton()->EnumerateEdgeTpu();
   // Open available device
   auto tpu_context = edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice();

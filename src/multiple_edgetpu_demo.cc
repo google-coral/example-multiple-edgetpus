@@ -165,8 +165,8 @@ int main(int argc, char *argv[]) {
       model_path.c_str(), &error_reporter));
 
   // Open available device
-  auto tpu_context = edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice();
-  CHECK(tpu_context) << "Error: Unable to open Edge TPU device";
+  auto tpu_context =
+      CHECK_NOTNULL(edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice());
   std::unique_ptr<tflite::Interpreter> interpreter =
       SetUpIntepreter(*(model), tpu_context.get());
 

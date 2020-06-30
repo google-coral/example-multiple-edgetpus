@@ -46,8 +46,6 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
   // Add edge TPU as external context to interpreter
   interpreter->SetExternalContext(kTfLiteEdgeTpuContext, context);
   interpreter->AllocateTensors();
-  uint8_t *input_tensor =
-      CHECK_NOTNULL(interpreter->typed_input_tensor<uint8_t>(0));
   return interpreter;
 }
 

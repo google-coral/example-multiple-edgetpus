@@ -40,13 +40,14 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
   std::unique_ptr<tflite::Interpreter> interpreter;
   TfLiteStatus interpreter_build = builder(&interpreter);
   CHECK(interpreter_build == kTfLiteOk) << "Error: Cannot build interpreter";
+  CHECK(interpreter->tensor(0)->type == kTfLiteUInt8)
+      << "Error: Incorrect input tensor type from model";
 
   // Add edge TPU as external context to interpreter
   interpreter->SetExternalContext(kTfLiteEdgeTpuContext, context);
   interpreter->AllocateTensors();
-  uint8_t *input_tensor = interpreter->typed_input_tensor<uint8_t>(0);
-  CHECK(input_tensor != nullptr)
-      << "Error: Model has incorrect input tensor type";
+  uint8_t *input_tensor =
+      CHECK_NOTNULL(interpreter->typed_input_tensor<uint8_t>(0));
   return interpreter;
 }
 
@@ -69,20 +70,20 @@ GstFlowReturn OnNewSample(GstElement *sink, tflite::Interpreter *interpreter) {
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       // Allocate input tensor and copy mapinfo data over
       uint8_t *input_tensor = interpreter->typed_input_tensor<uint8_t>(0);
-      CHECK(input_tensor != nullptr) << "Error: unable to get input tensor";
+      CHECK(input_tensor != nullptr) << "Error: Unable to get input tensor";
       std::memcpy(input_tensor, info.data, info.size);
 
       // Run inference on input tensor
-      TfLiteStatus invoke_status = interpreter->Invoke();
-      CHECK(invoke_status == kTfLiteOk) << "Error: Invoke was unsuccessful";
+      CHECK(interpreter->Invoke() == kTfLiteOk)
+          << "Error: Invoke was unsuccessful";
 
       // Retrieve output tensor
       uint8_t *output_tensor = interpreter->typed_output_tensor<uint8_t>(0);
-      CHECK(output_tensor != nullptr) << "Error: unable to get output tensor";
+      CHECK(output_tensor != nullptr) << "Error: Unable to get output tensor";
       int output_index = interpreter->outputs()[0];
       TfLiteTensor *out_tensor = interpreter->tensor(output_index);
       CHECK(out_tensor != nullptr)
-          << "Error: unable to get output tflite tensor";
+          << "Error: Unable to get output tflite tensor";
       std::vector<float> inference_result(out_tensor->bytes);
 
       // Dequantize output tensor
@@ -162,13 +163,12 @@ int main(int argc, char *argv[]) {
   const std::string model_path = argv[2];
   // Load model to memory
   tflite::StderrReporter error_reporter;
-  auto model = tflite::FlatBufferModel::BuildFromFile(model_path.c_str(),
-                                                      &error_reporter);
-  CHECK(model != nullptr) << "Error: Unable to load model";
-  // Setup edge TPU context
-  auto all_tpus = edgetpu::EdgeTpuManager::GetSingleton()->EnumerateEdgeTpu();
+  auto model = CHECK_NOTNULL(tflite::FlatBufferModel::BuildFromFile(
+      model_path.c_str(), &error_reporter));
+
   // Open available device
   auto tpu_context = edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice();
+  CHECK(tpu_context) << "Error: Unable to open Edge TPU device";
   std::unique_ptr<tflite::Interpreter> interpreter =
       SetUpIntepreter(*(model), tpu_context.get());
 

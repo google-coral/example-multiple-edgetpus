@@ -24,6 +24,7 @@
 #include "glog/logging.h"
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/register.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/model.h"
 
 // Function that sets up and builds the interpreter for inference
@@ -39,9 +40,9 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
   tflite::InterpreterBuilder builder(model.GetModel(), resolver);
   std::unique_ptr<tflite::Interpreter> interpreter;
   TfLiteStatus interpreter_build = builder(&interpreter);
-  CHECK(interpreter_build == kTfLiteOk) << "Error: Cannot build interpreter";
-  CHECK(interpreter->tensor(0)->type == kTfLiteUInt8)
-      << "Error: Incorrect input tensor type from model";
+  CHECK_EQ(interpreter_build, kTfLiteOk);
+  CHECK_EQ(interpreter->tensor(interpreter->inputs()[0])->type, kTfLiteUInt8);
+  CHECK_EQ(interpreter->tensor(interpreter->outputs()[0])->type, kTfLiteUInt8);
 
   // Add edge TPU as external context to interpreter
   interpreter->SetExternalContext(kTfLiteEdgeTpuContext, context);
@@ -67,43 +68,41 @@ GstFlowReturn OnNewSample(GstElement *sink, tflite::Interpreter *interpreter) {
     // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       // Allocate input tensor and copy mapinfo data over
-      uint8_t *input_tensor = interpreter->typed_input_tensor<uint8_t>(0);
-      CHECK(input_tensor != nullptr) << "Error: Unable to get input tensor";
+      uint8_t *input_tensor =
+          CHECK_NOTNULL(interpreter->typed_input_tensor<uint8_t>(0));
       std::memcpy(input_tensor, info.data, info.size);
 
       // Run inference on input tensor
-      CHECK(interpreter->Invoke() == kTfLiteOk)
-          << "Error: Invoke was unsuccessful";
+      CHECK_EQ(interpreter->Invoke(), kTfLiteOk);
 
-      // Retrieve output tensor
-      uint8_t *output_tensor = interpreter->typed_output_tensor<uint8_t>(0);
-      CHECK(output_tensor != nullptr) << "Error: Unable to get output tensor";
-      int output_index = interpreter->outputs()[0];
-      TfLiteTensor *out_tensor = interpreter->tensor(output_index);
-      CHECK(out_tensor != nullptr)
-          << "Error: Unable to get output tflite tensor";
+      // Retrieve output tensor and output tensor data
+      const int output_index = interpreter->outputs()[0];
+      const TfLiteTensor *out_tensor =
+          CHECK_NOTNULL(interpreter->tensor(output_index));
+      const uint8_t *out_tensor_data =
+          tflite::GetTensorData<uint8_t>(out_tensor);
       std::vector<float> inference_result(out_tensor->bytes);
 
       // Dequantize output tensor
-      for (unsigned int i = 0; i < inference_result.size(); i++) {
+      for (size_t i = 0; i < inference_result.size(); i++) {
         inference_result[i] =
-            (output_tensor[i] - out_tensor->params.zero_point) *
+            (out_tensor_data[i] - out_tensor->params.zero_point) *
             out_tensor->params.scale;
       }
       // Increment frame count
-      std::cout << "Frame " << frame_count << " inference results:\n";
-      ++frame_count;
+      std::cout << "Frame " << frame_count++
+                << " inference results:" << std::endl;
       // Print result of output tensor (all labels with a score > 0.1)
-      for (unsigned int i = 0; i < inference_result.size(); i++) {
+      for (size_t i = 0; i < inference_result.size(); i++) {
         if (inference_result[i] > 0.1) {
-          std::cout << "-----------------------------------\n";
+          std::cout << "-----------------------------------" << std::endl;
           std::cout << "Label id " << i << std::endl;
           std::cout << "Score: " << inference_result[i] << std::endl;
         }
       }
-      std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
+      std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
     } else {
-      std::cout << "Error: Couldn't get buffer info\n";
+      std::cout << "Error: Couldn't get buffer info" << std::endl;
       retval = GST_FLOW_ERROR;
     }
     gst_buffer_unmap(buffer, &info);
@@ -150,7 +149,8 @@ int main(int argc, char *argv[]) {
   const int kNumArgs = 3;
 
   if (argc != kNumArgs) {
-    g_print("Usage: <binary path> <video file path> <model file path>\n");
+    std::cout << "Usage: <binary path> <video file path> <model file path>"
+              << std::endl;
     return -1;
   }
 
@@ -168,7 +168,7 @@ int main(int argc, char *argv[]) {
   auto tpu_context =
       CHECK_NOTNULL(edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice());
   std::unique_ptr<tflite::Interpreter> interpreter =
-      SetUpIntepreter(*(model), tpu_context.get());
+      CHECK_NOTNULL(SetUpIntepreter(*(model), tpu_context.get()));
 
   // Create pipeline
   const std::string user_input = argv[1];

@@ -17,6 +17,9 @@ cc_binary(
     srcs = ["multiple_edgetpu_demo.cc"],
     deps = [
         "@local_gst//:gstreamer",
-        "@edgetpu//src/cpp/classification:engine",
+        "@libedgetpu//:header",
+        "@org_tensorflow//tensorflow/lite:framework",
+        "@org_tensorflow//tensorflow/lite/kernels:builtin_ops",
+        "@com_google_glog//:glog",
     ],
 )

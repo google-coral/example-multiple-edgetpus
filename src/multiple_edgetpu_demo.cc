@@ -18,6 +18,8 @@
 // NOTE: the default number of segments needed is 3
 
 #include <gst/gst.h>
+#include <chrono>
+#include <ctime>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -43,6 +45,8 @@ struct LoopContainer {
   GMainLoop *loop;
   coral::PipelinedModelRunner *runner;
 };
+
+static std::chrono::time_point<std::chrono::system_clock> start, end;
 
 // Function that returns a vector of Edge TPU contexts
 // Returns an empty vector if not enough Edge TPUs are connected
@@ -116,6 +120,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *cc) {
       memcpy(pipe_buffer.data.data, info.data, info.size);
       image_input_tensor.push_back(pipe_buffer);
       // Push pipeline tensor to Pipeline Runner
+      start = std::chrono::system_clock::now();
       CHECK_EQ(cc->runner->Push(image_input_tensor), true);
     } else {
       std::cout << "Error: Couldn't get buffer info" << std::endl;
@@ -248,11 +253,14 @@ int main(int argc, char *argv[]) {
             max_index = i;
           }
         }
+        end = std::chrono::system_clock::now();
+        std::chrono::duration<double> elapsed_time = end - start;
         std::cout << "Frame " << frame_count++ << std::endl;
-        std::cout << "-------------------------" << std::endl;
+        std::cout << "---------------------------" << std::endl;
         std::cout << "Label id " << max_index << std::endl;
         std::cout << "Max Score: " << max_score << std::endl;
-        std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+        std::cout << "Inference (sec): " << elapsed_time.count() << std::endl;
+        std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
       }
       coral::FreeTensors(output_tensors,
                          runner_container.runner->GetOutputTensorAllocator());

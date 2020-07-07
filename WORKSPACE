@@ -35,7 +35,7 @@ http_archive(
 ) 
 
 http_archive(
-    name = "com_google_glog",
+    name = "glog",
     sha256 = "835888ec47ee8065b3098f3ec4373717d641954970f009833ed6d466c397409a",
     strip_prefix = "glog-41f4bf9cbc3e8995d628b459f6a239df43c2b84a",
     urls = [
@@ -63,10 +63,10 @@ tf_workspace(tf_repo_name = "org_tensorflow")
 
 http_archive(
     name = "edgetpu",
-    sha256 = "dc5eb443fa1b4132f6828fc0796169e0595643d415b585351839d3c4f796e6a8",
-    strip_prefix = "edgetpu-14237f65ba07b7b1d8287e9f60dd20c88562871a",
+    sha256 = "3675945e7e0ce7b3f182883f321fa39f64a475a3e50a1a922fd6ef8a7563d6bc",
+    strip_prefix = "edgetpu-285cacf0a879e3e343abd38c33eb622ae253529c",
     urls = [
-        "https://github.com/google-coral/edgetpu/archive/14237f65ba07b7b1d8287e9f60dd20c88562871a.tar.gz",
+        "https://github.com/google-coral/edgetpu/archive/285cacf0a879e3e343abd38c33eb622ae253529c.tar.gz",
     ]
 )
 

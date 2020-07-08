@@ -35,10 +35,9 @@
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
 
-// Struct for tflite intepreter and model pipeline runner
+// Struct for model pipeline runner and relevant variables
 struct Container {
   coral::PipelinedModelRunner *runner;
-  tflite::Interpreter *interpreter;
   float scale;
   int32_t zero_point;
 };

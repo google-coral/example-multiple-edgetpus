@@ -14,7 +14,8 @@
 
 // To run this file
 //    1) Build the file with: make CPU=aarch64 examples
-//    2) Run: path/to/executable path/to/video path/to/model_file_base
+//    2) Run: executable path/to/video path/to/model_file_base
+//    num_segments
 // NOTE: the default number of segments needed is 3
 
 #include <gst/gst.h>
@@ -38,6 +39,8 @@
 struct Container {
   coral::PipelinedModelRunner *runner;
   tflite::Interpreter *interpreter;
+  float scale;
+  int32_t zero_point;
 };
 
 // Struct for model pipeline runner and gloop
@@ -47,9 +50,11 @@ struct LoopContainer {
 };
 
 static std::chrono::time_point<std::chrono::system_clock> start, end;
+static int frame_count = 0;
 
 // Function that returns a vector of Edge TPU contexts
-// Returns an empty vector if not enough Edge TPUs are connected
+// Only returns a vector of Edge TPU contexts if enough are available
+// Otherwise, program will terminate
 // Input: int num (number of expected Edge TPUs)
 // Ouput: vector of shared ptrs to Edge TPU contexts
 std::vector<std::shared_ptr<edgetpu::EdgeTpuContext>> PrepareEdgeTPUContexts(
@@ -57,10 +62,11 @@ std::vector<std::shared_ptr<edgetpu::EdgeTpuContext>> PrepareEdgeTPUContexts(
   // Get all available Edge TPUs
   const auto &all_tpus =
       edgetpu::EdgeTpuManager::GetSingleton()->EnumerateEdgeTpu();
+  CHECK_EQ(all_tpus.size() >= num, true);
 
   // Open each Edge TPU device and add to vector of Edge TPU contexts
   std::vector<std::shared_ptr<edgetpu::EdgeTpuContext>> edgetpu_contexts(num);
-  for (size_t i = 0; i < all_tpus.size(); i++) {
+  for (size_t i = 0; i < num; i++) {
     edgetpu_contexts[i] =
         CHECK_NOTNULL(edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice(
             all_tpus[i].type, all_tpus[i].path));
@@ -146,19 +152,11 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
       container->runner->Push({});
       g_main_loop_quit(loop);
       break;
-    case GST_MESSAGE_ERROR: {
-      GError *error;
-      gst_message_parse_error(msg, &error, nullptr);
-      g_printerr("Error: %s\n", error->message);
-      g_error_free(error);
-      container->runner->Push({});
-      g_main_loop_quit(loop);
-      break;
-    }
+    case GST_MESSAGE_ERROR:
     case GST_MESSAGE_WARNING: {
       GError *error;
-      gst_message_parse_warning(msg, &error, nullptr);
-      g_printerr("Warning: %s\n", error->message);
+      gst_message_parse_error(msg, &error, nullptr);
+      g_printerr("Error/Warning: %s\n", error->message);
       g_error_free(error);
       container->runner->Push({});
       g_main_loop_quit(loop);
@@ -171,24 +169,25 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
 }
 
 int main(int argc, char *argv[]) {
-  const int kNumArgs = 3;
+  const int kNumArgs = 4;
 
   if (argc != kNumArgs) {
-    std::cout
-        << "Usage: <binary path> <video file path> <model file path segments>"
-        << std::endl;
+    std::cout << "Usage: <binary path> <video file path> <model file path "
+                 "segments> <number of segments>"
+              << std::endl;
     return -1;
   }
-
-  // Get available devices
-  auto tpu_contexts = PrepareEdgeTPUContexts(3);
 
   // Initialize Google's logging library.
   google::InitGoogleLogging(argv[0]);
 
   // Create all model path strings
   const std::string model_path_base = argv[2];
-  int num_segments = 2;
+  int num_segments = std::stoi(argv[3]);
+
+  // Get available devices
+  auto tpu_contexts = PrepareEdgeTPUContexts(num_segments);
+  // Create model segment file path strings
   std::vector<std::string> model_path_segments(num_segments);
   for (int i = 0; i < num_segments; i++) {
     model_path_segments[i] = model_path_base + "_segment_" + std::to_string(i) +
@@ -196,6 +195,10 @@ int main(int argc, char *argv[]) {
                              "_edgetpu.tflite";
   }
 
+  Container runner_container;
+
+  // Pipeline width, height, and depth variables
+  int width, height, depth;
   // Create vector of tflite interpreters for model segments
   std::vector<std::unique_ptr<tflite::Interpreter>> managed_interpreters(
       num_segments);
@@ -205,63 +208,64 @@ int main(int argc, char *argv[]) {
     models[i] = CHECK_NOTNULL(
         tflite::FlatBufferModel::BuildFromFile(model_path_segments[i].c_str()));
     managed_interpreters[i] =
-        CHECK_NOTNULL(SetUpIntepreter(*(models[i]), tpu_contexts[i + 1].get()));
+        CHECK_NOTNULL(SetUpIntepreter(*(models[i]), tpu_contexts[i].get()));
     all_interpreters[i] = managed_interpreters[i].get();
+    // Get tensor dimensions from input tensor for gstreamer pipeline
+    if (i == 0) {
+      int input_num = all_interpreters[i]->inputs()[0];
+      TfLiteTensor *input_tensor =
+          CHECK_NOTNULL(all_interpreters[i]->tensor(input_num));
+      width = input_tensor->dims->data[1];
+      height = input_tensor->dims->data[2];
+      depth = input_tensor->dims->data[3];
+    }
+    // Get scale and zero_point variables from output tensor
+    else if (i == num_segments - 1) {
+      const int output_index = all_interpreters[i]->outputs()[0];
+      const TfLiteTensor *tensor_data =
+          CHECK_NOTNULL(all_interpreters[i]->tensor(output_index));
+      runner_container.scale = tensor_data->params.scale;
+      runner_container.zero_point = tensor_data->params.zero_point;
+    }
   }
 
   // Create Model Pipeline Runner
   std::unique_ptr<coral::PipelinedModelRunner> runner(
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
-
-  // Create tflite interpreter for whole model
-  std::string model_path = model_path_base + "_edgetpu.tflite";
-  auto model =
-      CHECK_NOTNULL(tflite::FlatBufferModel::BuildFromFile(model_path.c_str()));
-  std::unique_ptr<tflite::Interpreter> interpreter =
-      CHECK_NOTNULL(SetUpIntepreter(*(model), tpu_contexts[0].get()));
-  Container runner_container;
   runner_container.runner = runner.get();
-  runner_container.interpreter = interpreter.get();
 
   // Consumer function prints out Pipeline Runner results as they are pushed
   auto request_consumer = [&runner_container]() {
     std::vector<coral::PipelineTensor> output_tensors;
-    static int frame_count = 0;
     while (runner_container.runner->Pop(&output_tensors)) {
-      if (output_tensors.size() > 0) {
-        coral::PipelineTensor out_tensor = output_tensors[0];
-        uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
+      end = std::chrono::system_clock::now();
+      coral::PipelineTensor out_tensor = output_tensors[0];
+      uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
 
-        // Dequantize output tensor
-        const int output_index = runner_container.interpreter->outputs()[0];
-        const TfLiteTensor *tensor_data =
-            CHECK_NOTNULL(runner_container.interpreter->tensor(output_index));
-        std::vector<float> inference_result(out_tensor.bytes);
-        for (size_t i = 0; i < inference_result.size(); i++) {
-          inference_result[i] =
-              (output_tensor[i] - tensor_data->params.zero_point) *
-              tensor_data->params.scale;
-        }
-
-        // Find and print out max score of each frame inference result
-        float max_score = 0.0;
-        int max_index = 0;
-        for (size_t i = 0; i < inference_result.size(); i++) {
-          if (inference_result[i] > max_score) {
-            max_score = inference_result[i];
-            max_index = i;
-          }
-        }
-        end = std::chrono::system_clock::now();
-        std::chrono::duration<double> elapsed_time = end - start;
-        std::cout << "Frame " << frame_count++ << std::endl;
-        std::cout << "---------------------------" << std::endl;
-        std::cout << "Label id " << max_index << std::endl;
-        std::cout << "Max Score: " << max_score << std::endl;
-        std::cout << "Inference (sec): " << elapsed_time.count() << std::endl;
-        std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+      // Dequantize output tensor
+      std::vector<float> inference_result(out_tensor.bytes);
+      for (size_t i = 0; i < inference_result.size(); i++) {
+        inference_result[i] = (output_tensor[i] - runner_container.zero_point) *
+                              runner_container.scale;
       }
+
+      // Find and print out max score of each frame inference result
+      float max_score = 0.0;
+      int max_index = 0;
+      for (size_t i = 0; i < inference_result.size(); i++) {
+        if (inference_result[i] > max_score) {
+          max_score = inference_result[i];
+          max_index = i;
+        }
+      }
+      std::chrono::duration<double> elapsed_time = end - start;
+      std::cout << "Frame " << frame_count++ << std::endl;
+      std::cout << "---------------------------" << std::endl;
+      std::cout << "Label id " << max_index << std::endl;
+      std::cout << "Max Score: " << max_score << std::endl;
+      std::cout << "Inference (sec): " << elapsed_time.count() << std::endl;
+      std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
       coral::FreeTensors(output_tensors,
                          runner_container.runner->GetOutputTensorAllocator());
       output_tensors.clear();
@@ -270,12 +274,14 @@ int main(int argc, char *argv[]) {
 
   // Create pipeline
   const std::string user_input = argv[1];
-  const std::string pipeline_src =
-      "filesrc location=" + user_input +
-      " ! decodebin ! glfilterbin filter=glbox ! "
-      "video/x-raw,width=224,height=224,format=RGB ! "
-      "appsink name=appsink emit-signals=true "
-      "max-buffers=1 drop=true";
+  const std::string pipeline_src = "filesrc location=" + user_input +
+                                   " ! decodebin ! glfilterbin filter=glbox ! "
+                                   "video/x-raw,width=" +
+                                   std::to_string(width) +
+                                   ",height=" + std::to_string(height) +
+                                   ",format=RGB ! "
+                                   "appsink name=appsink emit-signals=true "
+                                   "max-buffers=1 drop=true";
 
   // Initialize GStreamer
   gst_init(NULL, NULL);

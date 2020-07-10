@@ -19,6 +19,7 @@
 // NOTE: the default number of segments needed is 3
 
 #include <gst/gst.h>
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <iostream>
@@ -40,6 +41,9 @@ struct Container {
   coral::PipelinedModelRunner *runner;
   float scale;
   int32_t zero_point;
+  std::chrono::time_point<std::chrono::system_clock> start;
+  std::chrono::time_point<std::chrono::system_clock> end;
+  int frame_count;
 };
 
 // Struct for model pipeline runner and gloop
@@ -47,9 +51,6 @@ struct LoopContainer {
   GMainLoop *loop;
   coral::PipelinedModelRunner *runner;
 };
-
-static std::chrono::time_point<std::chrono::system_clock> start, end;
-static int frame_count = 0;
 
 // Function that returns a vector of Edge TPU contexts
 // Only returns a vector of Edge TPU contexts if enough are available
@@ -103,7 +104,7 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
 // appsink in the pipeline in order to work.
 // Inputs: GstElement* and Container*
 // Output: GstFlow value (OK or ERROR)
-GstFlowReturn OnNewSample(GstElement *sink, Container *cc) {
+GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
   GstFlowReturn retval = GST_FLOW_OK;
   // Retrieve sample from sink
   GstSample *sample;
@@ -115,7 +116,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *cc) {
     // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       coral::Allocator *allocator =
-          CHECK_NOTNULL(cc->runner->GetInputTensorAllocator());
+          CHECK_NOTNULL(container->runner->GetInputTensorAllocator());
       std::vector<coral::PipelineTensor> image_input_tensor;
       // Create pipeline tensor
       coral::PipelineTensor pipe_buffer;
@@ -125,8 +126,8 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *cc) {
       memcpy(pipe_buffer.data.data, info.data, info.size);
       image_input_tensor.push_back(pipe_buffer);
       // Push pipeline tensor to Pipeline Runner
-      start = std::chrono::system_clock::now();
-      CHECK_EQ(cc->runner->Push(image_input_tensor), true);
+      container->start = std::chrono::system_clock::now();
+      CHECK_EQ(container->runner->Push(image_input_tensor), true);
     } else {
       std::cout << "Error: Couldn't get buffer info" << std::endl;
       retval = GST_FLOW_ERROR;
@@ -135,6 +136,42 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *cc) {
     gst_sample_unref(sample);
   }
   return retval;
+}
+
+// Function that waits for outpute Pipeline Tensors and prints inference results
+// from Model Pipeline Runner
+// Input: Container*
+void request_consumer(Container *runner_container) {
+  std::vector<coral::PipelineTensor> output_tensors;
+  while (runner_container->runner->Pop(&output_tensors)) {
+    runner_container->end = std::chrono::system_clock::now();
+    coral::PipelineTensor out_tensor = output_tensors[0];
+    uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
+
+    // Dequantize output tensor
+    std::vector<float> inference_result(out_tensor.bytes);
+    for (size_t i = 0; i < inference_result.size(); i++) {
+      inference_result[i] = (output_tensor[i] - runner_container->zero_point) *
+                            runner_container->scale;
+    }
+
+    // Find and print out max score of each frame inference result
+    auto max_element =
+        std::max_element(inference_result.begin(), inference_result.end());
+    int max_index = std::distance(inference_result.begin(), max_element);
+    float max_score = inference_result[max_index];
+    std::chrono::duration<double> elapsed_time =
+        runner_container->end - runner_container->start;
+    std::cout << "Frame " << runner_container->frame_count++ << std::endl;
+    std::cout << "---------------------------" << std::endl;
+    std::cout << "Label id " << max_index << std::endl;
+    std::cout << "Max Score: " << max_score << std::endl;
+    std::cout << "Inference (sec): " << elapsed_time.count() << std::endl;
+    std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+    coral::FreeTensors(output_tensors,
+                       runner_container->runner->GetOutputTensorAllocator());
+    output_tensors.clear();
+  }
 }
 
 // Function reads messages as they become available from the stream and
@@ -154,8 +191,13 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
     case GST_MESSAGE_ERROR:
     case GST_MESSAGE_WARNING: {
       GError *error;
-      gst_message_parse_error(msg, &error, nullptr);
-      g_printerr("Error/Warning: %s\n", error->message);
+      if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
+        gst_message_parse_error(msg, &error, nullptr);
+        g_printerr("Error: %s\n", error->message);
+      } else {
+        gst_message_parse_warning(msg, &error, nullptr);
+        g_printerr("Warning: %s\n", error->message);
+      }
       g_error_free(error);
       container->runner->Push({});
       g_main_loop_quit(loop);
@@ -209,67 +251,28 @@ int main(int argc, char *argv[]) {
     managed_interpreters[i] =
         CHECK_NOTNULL(SetUpIntepreter(*(models[i]), tpu_contexts[i].get()));
     all_interpreters[i] = managed_interpreters[i].get();
-    // Get tensor dimensions from input tensor for gstreamer pipeline
-    if (i == 0) {
-      int input_num = all_interpreters[i]->inputs()[0];
-      TfLiteTensor *input_tensor =
-          CHECK_NOTNULL(all_interpreters[i]->tensor(input_num));
-      width = input_tensor->dims->data[1];
-      height = input_tensor->dims->data[2];
-      depth = input_tensor->dims->data[3];
-    }
-    // Get scale and zero_point variables from output tensor
-    else if (i == num_segments - 1) {
-      const int output_index = all_interpreters[i]->outputs()[0];
-      const TfLiteTensor *tensor_data =
-          CHECK_NOTNULL(all_interpreters[i]->tensor(output_index));
-      runner_container.scale = tensor_data->params.scale;
-      runner_container.zero_point = tensor_data->params.zero_point;
-    }
   }
 
+  // Get tensor dimensions from input tensor for gstreamer pipeline
+  int input_num = all_interpreters[0]->inputs()[0];
+  TfLiteTensor *input_tensor =
+      CHECK_NOTNULL(all_interpreters[0]->tensor(input_num));
+  width = input_tensor->dims->data[1];
+  height = input_tensor->dims->data[2];
+  depth = input_tensor->dims->data[3];
+
+  // Get scale and zero_point variables from output tensor
+  const int output_index = all_interpreters[num_segments - 1]->outputs()[0];
+  const TfLiteTensor *tensor_data =
+      CHECK_NOTNULL(all_interpreters[num_segments - 1]->tensor(output_index));
+  runner_container.scale = tensor_data->params.scale;
+  runner_container.zero_point = tensor_data->params.zero_point;
   // Create Model Pipeline Runner
   std::unique_ptr<coral::PipelinedModelRunner> runner(
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
   runner_container.runner = runner.get();
-
-  // Consumer function prints out Pipeline Runner results as they are pushed
-  auto request_consumer = [&runner_container]() {
-    std::vector<coral::PipelineTensor> output_tensors;
-    while (runner_container.runner->Pop(&output_tensors)) {
-      end = std::chrono::system_clock::now();
-      coral::PipelineTensor out_tensor = output_tensors[0];
-      uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
-
-      // Dequantize output tensor
-      std::vector<float> inference_result(out_tensor.bytes);
-      for (size_t i = 0; i < inference_result.size(); i++) {
-        inference_result[i] = (output_tensor[i] - runner_container.zero_point) *
-                              runner_container.scale;
-      }
-
-      // Find and print out max score of each frame inference result
-      float max_score = 0.0;
-      int max_index = 0;
-      for (size_t i = 0; i < inference_result.size(); i++) {
-        if (inference_result[i] > max_score) {
-          max_score = inference_result[i];
-          max_index = i;
-        }
-      }
-      std::chrono::duration<double> elapsed_time = end - start;
-      std::cout << "Frame " << frame_count++ << std::endl;
-      std::cout << "---------------------------" << std::endl;
-      std::cout << "Label id " << max_index << std::endl;
-      std::cout << "Max Score: " << max_score << std::endl;
-      std::cout << "Inference (sec): " << elapsed_time.count() << std::endl;
-      std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
-      coral::FreeTensors(output_tensors,
-                         runner_container.runner->GetOutputTensorAllocator());
-      output_tensors.clear();
-    }
-  };
+  runner_container.frame_count = 0;
 
   // Create pipeline
   const std::string user_input = argv[1];
@@ -302,7 +305,7 @@ int main(int argc, char *argv[]) {
                    &runner_container);
 
   // Start consumer thread
-  auto consumer = std::thread(request_consumer);
+  auto consumer = std::thread(request_consumer, &runner_container);
 
   // Start the pipeline, runs until interrupted, EOS or error
   gst_element_set_state(pipeline, GST_STATE_PLAYING);

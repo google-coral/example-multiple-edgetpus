@@ -41,7 +41,6 @@ struct Container {
   coral::PipelinedModelRunner *runner;
   float scale;
   int32_t zero_point;
-  int frame_count;
 };
 
 // Struct for model pipeline runner and gloop
@@ -119,7 +118,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
       pipe_buffer.data.data = allocator->alloc(info.size);
       pipe_buffer.bytes = info.size;
       pipe_buffer.type = kTfLiteUInt8;
-      memcpy(pipe_buffer.data.data, info.data, info.size);
+      std::memcpy(pipe_buffer.data.data, info.data, info.size);
       // Push pipeline tensor to Pipeline Runner
       CHECK_EQ(container->runner->Push({pipe_buffer}), true);
     } else {
@@ -137,11 +136,11 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
 // Input: Container*
 void ResultConsumer(Container *runner_container) {
   std::vector<coral::PipelineTensor> output_tensors;
-  std::chrono::time_point<std::chrono::system_clock> start, end;
+  static int frame_count;
+  std::chrono::time_point<std::chrono::system_clock> start;
   // Only used for the the first frame inference
   start = std::chrono::system_clock::now();
   while (runner_container->runner->Pop(&output_tensors)) {
-    end = std::chrono::system_clock::now();
     coral::PipelineTensor out_tensor = output_tensors[0];
     uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
 
@@ -157,12 +156,13 @@ void ResultConsumer(Container *runner_container) {
         std::max_element(inference_result.begin(), inference_result.end());
     int max_index = std::distance(inference_result.begin(), max_element);
     float max_score = inference_result[max_index];
-    std::chrono::duration<double> elapsed_time = end - start;
-    std::cout << "Frame " << runner_container->frame_count++ << std::endl;
+    std::chrono::duration<double, std::milli> elapsed_time =
+        std::chrono::system_clock::now() - start;
+    std::cout << "Frame " << frame_count++ << std::endl;
     std::cout << "---------------------------" << std::endl;
     std::cout << "Label id " << max_index << std::endl;
     std::cout << "Max Score: " << max_score << std::endl;
-    std::cout << "Inference (sec): " << elapsed_time.count() << std::endl;
+    std::cout << "Runner: " << elapsed_time.count() << " ms" << std::endl;
     std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
     coral::FreeTensors(output_tensors,
                        runner_container->runner->GetOutputTensorAllocator());
@@ -185,16 +185,19 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
       container->runner->Push({});
       g_main_loop_quit(loop);
       break;
-    case GST_MESSAGE_ERROR:
+    case GST_MESSAGE_ERROR: {
+      GError *error;
+      gst_message_parse_error(msg, &error, nullptr);
+      g_printerr("Error: %s\n", error->message);
+      g_error_free(error);
+      container->runner->Push({});
+      g_main_loop_quit(loop);
+      break;
+    }
     case GST_MESSAGE_WARNING: {
       GError *error;
-      if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
-        gst_message_parse_error(msg, &error, nullptr);
-        g_printerr("Error: %s\n", error->message);
-      } else {
-        gst_message_parse_warning(msg, &error, nullptr);
-        g_printerr("Warning: %s\n", error->message);
-      }
+      gst_message_parse_warning(msg, &error, nullptr);
+      g_printerr("Warning: %s\n", error->message);
       g_error_free(error);
       container->runner->Push({});
       g_main_loop_quit(loop);
@@ -269,7 +272,6 @@ int main(int argc, char *argv[]) {
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
   runner_container.runner = runner.get();
-  runner_container.frame_count = 0;
 
   // Create pipeline
   const std::string user_input = argv[1];

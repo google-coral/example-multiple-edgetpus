@@ -14,9 +14,12 @@
 
 // To run this file
 //    1) Build the file with: make CPU=aarch64 examples
-//    2) Run: executable path/to/video path/to/model_file_base
-//    num_segments
-// NOTE: the default number of segments needed is 3
+//    2) Run: executable path/to/video
+// Flag options:
+// -model_path to specify where the models are located
+// -video_path to specify where the video file is located
+// -runner_type to specify initial run type
+// -num_segments to specify current number of Edge TPUs
 
 #include <gst/gst.h>
 #include <algorithm>
@@ -27,6 +30,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "absl/flags/flag.h"
+#include "absl/flags/parse.h"
 #include "edgetpu.h"
 #include "glog/logging.h"
 #include "src/cpp/pipeline/pipelined_model_runner.h"
@@ -36,19 +41,35 @@
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
 
-// Struct for model pipeline runner and relevant variables
+ABSL_FLAG(std::string, model_path, "./test/inception_v3_299_quant",
+          "Path to the tflite model base.");
+
+ABSL_FLAG(std::string, video_path, "./test/video_device.mp4",
+          "Path to the video file.");
+
+ABSL_FLAG(std::string, runner_type, "Runner",
+          "Type of runner (Runner or Interpreter).");
+
+ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
+
+// Enumerator for type of interpreter used
+enum RunType { Runner, Interpreter };
+
+// Struct for model pipeline runner, tflite::Interpreter, and relevant variables
 struct Container {
   coral::PipelinedModelRunner *runner;
+  tflite::Interpreter *interpreter;
   float scale;
   int32_t zero_point;
-  // TODO(jane): add pointer to tflite::Interpreter (model should be loaded on
-  // last segment of Edge TPU Contexts)
+  int frame_count;
+  RunType run_type;
 };
 
 // Struct for model pipeline runner and gloop
 struct LoopContainer {
   GMainLoop *loop;
   coral::PipelinedModelRunner *runner;
+  bool loop_finished;
 };
 
 // Function that returns a vector of Edge TPU contexts
@@ -65,7 +86,7 @@ std::vector<std::shared_ptr<edgetpu::EdgeTpuContext>> PrepareEdgeTPUContexts(
 
   // Open each Edge TPU device and add to vector of Edge TPU contexts
   std::vector<std::shared_ptr<edgetpu::EdgeTpuContext>> edgetpu_contexts(num);
-  for (size_t i = 0; i < num; i++) {
+  for (int i = 0; i < num; i++) {
     edgetpu_contexts[i] =
         CHECK_NOTNULL(edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice(
             all_tpus[i].type, all_tpus[i].path));
@@ -93,7 +114,7 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
 
   // Add edge TPU as external context to interpreter
   interpreter->SetExternalContext(kTfLiteEdgeTpuContext, context);
-  interpreter->AllocateTensors();
+  CHECK_EQ(interpreter->AllocateTensors(), kTfLiteOk);
   return interpreter;
 }
 
@@ -113,16 +134,52 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
     GstBuffer *buffer = CHECK_NOTNULL(gst_sample_get_buffer(sample));
     // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
-      coral::Allocator *allocator =
-          CHECK_NOTNULL(container->runner->GetInputTensorAllocator());
-      // Create pipeline tensor
-      coral::PipelineTensor pipe_buffer;
-      pipe_buffer.data.data = allocator->alloc(info.size);
-      pipe_buffer.bytes = info.size;
-      pipe_buffer.type = kTfLiteUInt8;
-      std::memcpy(pipe_buffer.data.data, info.data, info.size);
-      // Push pipeline tensor to Pipeline Runner
-      CHECK_EQ(container->runner->Push({pipe_buffer}), true);
+      if (container->run_type == Runner) {
+        coral::Allocator *allocator =
+            CHECK_NOTNULL(container->runner->GetInputTensorAllocator());
+        // Create pipeline tensor
+        coral::PipelineTensor pipe_buffer;
+        pipe_buffer.data.data = allocator->alloc(info.size);
+        pipe_buffer.bytes = info.size;
+        pipe_buffer.type = kTfLiteUInt8;
+        std::memcpy(pipe_buffer.data.data, info.data, info.size);
+        // Push pipeline tensor to Pipeline Runner
+        CHECK_EQ(container->runner->Push({pipe_buffer}), true);
+      } else {
+        uint8_t *input_tensor = CHECK_NOTNULL(
+            container->interpreter->typed_input_tensor<uint8_t>(0));
+        std::memcpy(input_tensor, info.data, info.size);
+        // Run inference on input tensor
+        const auto &start = std::chrono::system_clock::now();
+        CHECK_EQ(container->interpreter->Invoke(), kTfLiteOk);
+        // Retrieve output tensor and output tensor data
+        const int output_index = container->interpreter->outputs()[0];
+        const TfLiteTensor *out_tensor =
+            CHECK_NOTNULL(container->interpreter->tensor(output_index));
+        const uint8_t *out_tensor_data =
+            tflite::GetTensorData<uint8_t>(out_tensor);
+        std::vector<float> inference_result(out_tensor->bytes);
+        // Dequantize output tensor
+        for (size_t i = 0; i < inference_result.size(); i++) {
+          inference_result[i] =
+              (out_tensor_data[i] - container->zero_point) * container->scale;
+        }
+        // Find and print out max score of each frame inference result
+        auto max_element =
+            std::max_element(inference_result.begin(), inference_result.end());
+        int max_index = std::distance(inference_result.begin(), max_element);
+        float max_score = inference_result[max_index];
+        const auto &end = std::chrono::system_clock::now();
+        std::chrono::duration<double, std::milli> elapsed_time = end - start;
+        std::cout << "Frame " << container->frame_count++ << std::endl;
+        std::cout << "--------------------------------" << std::endl;
+        std::cout << "Label id " << max_index << std::endl;
+        std::cout << "Max Score: " << max_score << std::endl;
+        std::cout << "Interpreter: " << elapsed_time.count() << " ms"
+                  << std::endl;
+        std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+      }
+
     } else {
       std::cout << "Error: Couldn't get buffer info" << std::endl;
       retval = GST_FLOW_ERROR;
@@ -138,7 +195,6 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
 // Input: Container*
 void ResultConsumer(Container *runner_container) {
   std::vector<coral::PipelineTensor> output_tensors;
-  static int frame_count;
   std::chrono::time_point<std::chrono::system_clock> start;
   // Only used for the the first frame inference
   start = std::chrono::system_clock::now();
@@ -161,7 +217,7 @@ void ResultConsumer(Container *runner_container) {
     std::chrono::duration<double, std::milli> elapsed_time =
         std::chrono::system_clock::now() - start;
     start = std::chrono::system_clock::now();
-    std::cout << "Frame " << frame_count++ << std::endl;
+    std::cout << "Frame " << runner_container->frame_count++ << std::endl;
     std::cout << "---------------------------" << std::endl;
     std::cout << "Label id " << max_index << std::endl;
     std::cout << "Max Score: " << max_score << std::endl;
@@ -185,6 +241,7 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
     case GST_MESSAGE_EOS:
       g_print("End of stream\n");
       container->runner->Push({});
+      container->loop_finished = true;
       g_main_loop_quit(loop);
       break;
     case GST_MESSAGE_ERROR: {
@@ -193,6 +250,7 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
       g_printerr("Error: %s\n", error->message);
       g_error_free(error);
       container->runner->Push({});
+      container->loop_finished = true;
       g_main_loop_quit(loop);
       break;
     }
@@ -202,6 +260,7 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
       g_printerr("Warning: %s\n", error->message);
       g_error_free(error);
       container->runner->Push({});
+      container->loop_finished = true;
       g_main_loop_quit(loop);
       break;
     }
@@ -212,22 +271,14 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
 }
 
 int main(int argc, char *argv[]) {
-  // TODO(jane): Add absolute flags to parse user flags
-  const int kNumArgs = 4;
-
-  if (argc != kNumArgs) {
-    std::cout << "Usage: <binary path> <video file path> <model file path "
-                 "segments> <number of segments>"
-              << std::endl;
-    return -1;
-  }
+  absl::ParseCommandLine(argc, argv);
 
   // Initialize Google's logging library.
   google::InitGoogleLogging(argv[0]);
 
   // Create all model path strings
-  const std::string model_path_base = argv[2];
-  int num_segments = std::stoi(argv[3]);
+  const std::string model_path_base = absl::GetFlag(FLAGS_model_path);
+  const int num_segments = absl::GetFlag(FLAGS_num_segments);
 
   // Get available devices
   auto tpu_contexts = PrepareEdgeTPUContexts(num_segments);
@@ -238,6 +289,7 @@ int main(int argc, char *argv[]) {
                              "_of_" + std::to_string(num_segments) +
                              "_edgetpu.tflite";
   }
+  std::string full_model_path = model_path_base + "_edgetpu.tflite";
 
   Container runner_container;
 
@@ -255,13 +307,12 @@ int main(int argc, char *argv[]) {
   }
 
   // Get tensor dimensions from input tensor for gstreamer pipeline
-  int width, height, depth;
+  int width, height;
   int input_num = all_interpreters[0]->inputs()[0];
   TfLiteTensor *input_tensor =
       CHECK_NOTNULL(all_interpreters[0]->tensor(input_num));
   width = input_tensor->dims->data[1];
   height = input_tensor->dims->data[2];
-  depth = input_tensor->dims->data[3];
 
   // Get scale and zero_point variables from output tensor
   const int output_index = all_interpreters[num_segments - 1]->outputs()[0];
@@ -270,14 +321,30 @@ int main(int argc, char *argv[]) {
   runner_container.scale = tensor_data->params.scale;
   runner_container.zero_point = tensor_data->params.zero_point;
 
+  // Create tflite::Interpreter
+  auto full_model = CHECK_NOTNULL(
+      tflite::FlatBufferModel::BuildFromFile(full_model_path.c_str()));
+  std::unique_ptr<tflite::Interpreter> interpreter = CHECK_NOTNULL(
+      SetUpIntepreter(*(full_model), tpu_contexts[num_segments - 1].get()));
+
   // Create Model Pipeline Runner
   std::unique_ptr<coral::PipelinedModelRunner> runner(
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
   runner_container.runner = runner.get();
+  runner_container.interpreter = interpreter.get();
+  runner_container.frame_count = 0;
 
-  // Create pipeline
-  const std::string user_input = argv[1];
+  // Determine initial run type of program
+  const std::string run_type = absl::GetFlag(FLAGS_runner_type);
+  if (run_type == "Runner") {
+    runner_container.run_type = Runner;
+  } else {
+    runner_container.run_type = Interpreter;
+  }
+
+  // Create Gstreamer pipeline
+  const std::string user_input = absl::GetFlag(FLAGS_video_path);
   const std::string pipeline_src =
       "filesrc location=" + user_input +
       " ! decodebin ! glfilterbin filter=glbox ! videorate ! "
@@ -298,6 +365,7 @@ int main(int argc, char *argv[]) {
   LoopContainer loop_container;
   loop_container.loop = loop;
   loop_container.runner = runner.get();
+  loop_container.loop_finished = false;
   gst_bus_add_watch(bus, OnBusMessage, &loop_container);
   gst_object_unref(bus);
 
@@ -305,14 +373,32 @@ int main(int argc, char *argv[]) {
   g_signal_connect(sink, "new-sample", reinterpret_cast<GCallback>(OnNewSample),
                    &runner_container);
 
-  // Start consumer thread
+  auto keyboard_watch = [&runner_container, &loop_container]() {
+    char input;
+    while (!loop_container.loop_finished) {
+      std::cin >> input;
+      if (input == 'n') {
+        if (runner_container.run_type == Runner) {
+          runner_container.run_type = Interpreter;
+          std::cout << "Switching to interpreter" << std::endl;
+        } else {
+          runner_container.run_type = Runner;
+          std::cout << "Switching to runner" << std::endl;
+        }
+      }
+    }
+  };
+
+  // Start consumer and keyboard watching thread
   auto consumer = std::thread(ResultConsumer, &runner_container);
+  auto watcher = std::thread(keyboard_watch);
 
   // Start the pipeline, runs until interrupted, EOS or error
   gst_element_set_state(pipeline, GST_STATE_PLAYING);
   g_main_loop_run(loop);
 
   consumer.join();
+  watcher.join();
 
   // Cleanup
   gst_element_set_state(pipeline, GST_STATE_NULL);

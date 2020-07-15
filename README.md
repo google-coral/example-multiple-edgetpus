@@ -29,3 +29,11 @@ the project. Open a new terminal when the project is finished building, the bina
 should be in `out/aarch64/examples/` directory. In order to run the project, you
 must be connected to a Coral Dev Board and copy the binary over. All necessary
 tflite model files should also be copied to the Coral Dev Board.
+
+## Running the Project
+
+To run the project, you can enter `./multiple_edgetpu_demo -help` to see the flag
+options and default values. To specify any parameters, specify the flag and new
+input. If no new parameters are specified, the default values will be used to run
+the project. Please note that the default program requires 1 Coral Dev Board and
+2 Edge TPUs to run. 

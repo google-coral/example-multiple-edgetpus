@@ -52,6 +52,8 @@ ABSL_FLAG(std::string, runner_type, "Runner",
 
 ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
 
+ABSL_FLAG(int, fps, 60, "Framerate of video.");
+
 // Enumerator for type of interpreter used
 enum RunType { Runner, Interpreter };
 
@@ -345,11 +347,13 @@ int main(int argc, char *argv[]) {
 
   // Create Gstreamer pipeline
   const std::string user_input = absl::GetFlag(FLAGS_video_path);
+  const int fps = absl::GetFlag(FLAGS_fps);
   const std::string pipeline_src =
       "filesrc location=" + user_input +
       " ! decodebin ! glfilterbin filter=glbox ! videorate ! "
-      "video/x-raw,framerate=60/1,width=" +
-      std::to_string(width) + ",height=" + std::to_string(height) +
+      "video/x-raw,framerate=" +
+      std::to_string(fps) + "/1,width=" + std::to_string(width) +
+      ",height=" + std::to_string(height) +
       ",format=RGB ! appsink name=appsink emit-signals=true max-buffers=1 "
       "drop=true";
 

@@ -18,8 +18,10 @@ cc_binary(
     deps = [
         "@local_gst//:gstreamer",
         "@libedgetpu//:header",
+        "@edgetpu//src/cpp/pipeline:pipelined_model_runner",
+        "@edgetpu//src/cpp/pipeline:utils",
         "@org_tensorflow//tensorflow/lite:framework",
         "@org_tensorflow//tensorflow/lite/kernels:builtin_ops",
-        "@com_google_glog//:glog",
+        "@glog//:glog",
     ],
 )

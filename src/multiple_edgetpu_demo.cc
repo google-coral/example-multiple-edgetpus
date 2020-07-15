@@ -41,6 +41,8 @@ struct Container {
   coral::PipelinedModelRunner *runner;
   float scale;
   int32_t zero_point;
+  // TODO(jane): add pointer to tflite::Interpreter (model should be loaded on
+  // last segment of Edge TPU Contexts)
 };
 
 // Struct for model pipeline runner and gloop
@@ -158,6 +160,7 @@ void ResultConsumer(Container *runner_container) {
     float max_score = inference_result[max_index];
     std::chrono::duration<double, std::milli> elapsed_time =
         std::chrono::system_clock::now() - start;
+    start = std::chrono::system_clock::now();
     std::cout << "Frame " << frame_count++ << std::endl;
     std::cout << "---------------------------" << std::endl;
     std::cout << "Label id " << max_index << std::endl;
@@ -167,7 +170,6 @@ void ResultConsumer(Container *runner_container) {
     coral::FreeTensors(output_tensors,
                        runner_container->runner->GetOutputTensorAllocator());
     output_tensors.clear();
-    start = std::chrono::system_clock::now();
   }
 }
 
@@ -210,6 +212,7 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
 }
 
 int main(int argc, char *argv[]) {
+  // TODO(jane): Add absolute flags to parse user flags
   const int kNumArgs = 4;
 
   if (argc != kNumArgs) {
@@ -275,14 +278,13 @@ int main(int argc, char *argv[]) {
 
   // Create pipeline
   const std::string user_input = argv[1];
-  const std::string pipeline_src = "filesrc location=" + user_input +
-                                   " ! decodebin ! glfilterbin filter=glbox ! "
-                                   "video/x-raw,width=" +
-                                   std::to_string(width) +
-                                   ",height=" + std::to_string(height) +
-                                   ",format=RGB ! "
-                                   "appsink name=appsink emit-signals=true "
-                                   "max-buffers=1 drop=true";
+  const std::string pipeline_src =
+      "filesrc location=" + user_input +
+      " ! decodebin ! glfilterbin filter=glbox ! videorate ! "
+      "video/x-raw,framerate=60/1,width=" +
+      std::to_string(width) + ",height=" + std::to_string(height) +
+      ",format=RGB ! appsink name=appsink emit-signals=true max-buffers=1 "
+      "drop=true";
 
   // Initialize GStreamer
   gst_init(NULL, NULL);

@@ -32,6 +32,8 @@
 #include <vector>
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
+#include "absl/strings/substitute.h"
+#include "absl/synchronization/mutex.h"
 #include "edgetpu.h"
 #include "glog/logging.h"
 #include "src/cpp/pipeline/pipelined_model_runner.h"
@@ -54,8 +56,14 @@ ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
 
 ABSL_FLAG(int, fps, 60, "Framerate of video.");
 
+// Protects: frame_count and run_type in Container struct
+absl::Mutex mu_;
+
 // Enumerator for type of interpreter used
-enum RunType { Runner, Interpreter };
+enum class RunType {
+  kRunner,
+  kInterpreter,
+};
 
 // Struct for model pipeline runner, tflite::Interpreter, and relevant variables
 struct Container {
@@ -63,8 +71,8 @@ struct Container {
   tflite::Interpreter *interpreter;
   float scale;
   int32_t zero_point;
-  int frame_count;
-  RunType run_type;
+  int frame_count GUARDED_BY(mu_);
+  RunType run_type GUARDED_BY(mu_);
 };
 
 // Struct for model pipeline runner and gloop
@@ -120,6 +128,24 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
   return interpreter;
 }
 
+void PrintInferenceResults(Container *container, const uint8_t *data,
+                           int size) {
+  std::vector<float> inference_result(size);
+  // Dequantize output tensor
+  for (size_t i = 0; i < inference_result.size(); i++) {
+    inference_result[i] = (data[i] - container->zero_point) * container->scale;
+  }
+  // Find and print out max score of each frame inference result
+  auto max_element =
+      std::max_element(inference_result.begin(), inference_result.end());
+  int max_index = std::distance(inference_result.begin(), max_element);
+  float max_score = inference_result[max_index];
+  std::cout << "Frame " << container->frame_count++ << std::endl;
+  std::cout << "-----------------------------" << std::endl;
+  std::cout << "Label id " << max_index << std::endl;
+  std::cout << "Max Score: " << max_score << std::endl;
+}
+
 // Function called on every new available sample, reads each frame data, and
 // runs an inference on each frame, printing the result id and scores. Needs an
 // appsink in the pipeline in order to work.
@@ -136,7 +162,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
     GstBuffer *buffer = CHECK_NOTNULL(gst_sample_get_buffer(sample));
     // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
-      if (container->run_type == Runner) {
+      if (container->run_type == RunType::kRunner) {
         coral::Allocator *allocator =
             CHECK_NOTNULL(container->runner->GetInputTensorAllocator());
         // Create pipeline tensor
@@ -160,28 +186,15 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
             CHECK_NOTNULL(container->interpreter->tensor(output_index));
         const uint8_t *out_tensor_data =
             tflite::GetTensorData<uint8_t>(out_tensor);
-        std::vector<float> inference_result(out_tensor->bytes);
-        // Dequantize output tensor
-        for (size_t i = 0; i < inference_result.size(); i++) {
-          inference_result[i] =
-              (out_tensor_data[i] - container->zero_point) * container->scale;
-        }
-        // Find and print out max score of each frame inference result
-        auto max_element =
-            std::max_element(inference_result.begin(), inference_result.end());
-        int max_index = std::distance(inference_result.begin(), max_element);
-        float max_score = inference_result[max_index];
-        const auto &end = std::chrono::system_clock::now();
-        std::chrono::duration<double, std::milli> elapsed_time = end - start;
-        std::cout << "Frame " << container->frame_count++ << std::endl;
-        std::cout << "--------------------------------" << std::endl;
-        std::cout << "Label id " << max_index << std::endl;
-        std::cout << "Max Score: " << max_score << std::endl;
+        mu_.Lock();
+        PrintInferenceResults(container, out_tensor_data, out_tensor->bytes);
+        mu_.Unlock();
+        std::chrono::duration<double, std::milli> elapsed_time =
+            std::chrono::system_clock::now() - start;
         std::cout << "Interpreter: " << elapsed_time.count() << " ms"
                   << std::endl;
-        std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+        std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
       }
-
     } else {
       std::cout << "Error: Couldn't get buffer info" << std::endl;
       retval = GST_FLOW_ERROR;
@@ -201,32 +214,18 @@ void ResultConsumer(Container *runner_container) {
   // Only used for the the first frame inference
   start = std::chrono::system_clock::now();
   while (runner_container->runner->Pop(&output_tensors)) {
+    mu_.Lock();
     coral::PipelineTensor out_tensor = output_tensors[0];
-    uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
-
-    // Dequantize output tensor
-    std::vector<float> inference_result(out_tensor.bytes);
-    for (size_t i = 0; i < inference_result.size(); i++) {
-      inference_result[i] = (output_tensor[i] - runner_container->zero_point) *
-                            runner_container->scale;
-    }
-
-    // Find and print out max score of each frame inference result
-    auto max_element =
-        std::max_element(inference_result.begin(), inference_result.end());
-    int max_index = std::distance(inference_result.begin(), max_element);
-    float max_score = inference_result[max_index];
+    const uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
+    PrintInferenceResults(runner_container, output_tensor, out_tensor.bytes);
     std::chrono::duration<double, std::milli> elapsed_time =
         std::chrono::system_clock::now() - start;
     start = std::chrono::system_clock::now();
-    std::cout << "Frame " << runner_container->frame_count++ << std::endl;
-    std::cout << "---------------------------" << std::endl;
-    std::cout << "Label id " << max_index << std::endl;
-    std::cout << "Max Score: " << max_score << std::endl;
-    std::cout << "Runner: " << elapsed_time.count() << " ms" << std::endl;
-    std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+    std::cout << "Pipeline: " << elapsed_time.count() << " ms" << std::endl;
+    std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
     coral::FreeTensors(output_tensors,
                        runner_container->runner->GetOutputTensorAllocator());
+    mu_.Unlock();
     output_tensors.clear();
   }
 }
@@ -287,11 +286,12 @@ int main(int argc, char *argv[]) {
   // Create model segment file path strings
   std::vector<std::string> model_path_segments(num_segments);
   for (int i = 0; i < num_segments; i++) {
-    model_path_segments[i] = model_path_base + "_segment_" + std::to_string(i) +
-                             "_of_" + std::to_string(num_segments) +
-                             "_edgetpu.tflite";
+    model_path_segments[i] = absl::Substitute(
+        "$0_segment_$1_of_$2_edgetpu.tflite", model_path_base, i, num_segments);
+    std::cout << model_path_segments[i] << std::endl;
   }
-  std::string full_model_path = model_path_base + "_edgetpu.tflite";
+  const std::string full_model_path =
+      absl::StrCat(model_path_base, "_edgetpu.tflite");
 
   Container runner_container;
 
@@ -340,22 +340,19 @@ int main(int argc, char *argv[]) {
   // Determine initial run type of program
   const std::string run_type = absl::GetFlag(FLAGS_runner_type);
   if (run_type == "Runner") {
-    runner_container.run_type = Runner;
+    runner_container.run_type = RunType::kRunner;
   } else {
-    runner_container.run_type = Interpreter;
+    runner_container.run_type = RunType::kInterpreter;
   }
 
   // Create Gstreamer pipeline
-  const std::string user_input = absl::GetFlag(FLAGS_video_path);
+  const std::string video_path = absl::GetFlag(FLAGS_video_path);
   const int fps = absl::GetFlag(FLAGS_fps);
-  const std::string pipeline_src =
-      "filesrc location=" + user_input +
-      " ! decodebin ! glfilterbin filter=glbox ! videorate ! "
-      "video/x-raw,framerate=" +
-      std::to_string(fps) + "/1,width=" + std::to_string(width) +
-      ",height=" + std::to_string(height) +
-      ",format=RGB ! appsink name=appsink emit-signals=true max-buffers=1 "
-      "drop=true";
+  const std::string pipeline_src = absl::Substitute(
+      "filesrc location=$0 ! decodebin ! glfilterbin filter=glbox ! videorate "
+      "! video/x-raw,framerate=$1/1,width=$2,height=$3,format=RGB ! appsink "
+      "name=appsink emit-signals=true max-buffers=1 drop=true",
+      video_path, fps, width, height);
 
   // Initialize GStreamer
   gst_init(NULL, NULL);
@@ -382,13 +379,15 @@ int main(int argc, char *argv[]) {
     while (!loop_container.loop_finished) {
       std::cin >> input;
       if (input == 'n') {
-        if (runner_container.run_type == Runner) {
-          runner_container.run_type = Interpreter;
+        mu_.Lock();
+        if (runner_container.run_type == RunType::kRunner) {
+          runner_container.run_type = RunType::kInterpreter;
           std::cout << "Switching to interpreter" << std::endl;
         } else {
-          runner_container.run_type = Runner;
+          runner_container.run_type = RunType::kRunner;
           std::cout << "Switching to runner" << std::endl;
         }
+        mu_.Unlock();
       }
     }
   };

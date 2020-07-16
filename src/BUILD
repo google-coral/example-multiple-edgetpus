@@ -24,6 +24,8 @@ cc_binary(
         "@org_tensorflow//tensorflow/lite/kernels:builtin_ops",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/strings",
         "@glog//:glog",
     ],
 )

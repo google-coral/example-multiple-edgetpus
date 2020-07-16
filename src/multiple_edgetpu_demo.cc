@@ -140,7 +140,9 @@ void PrintInferenceResults(Container *container, const uint8_t *data,
       std::max_element(inference_result.begin(), inference_result.end());
   int max_index = std::distance(inference_result.begin(), max_element);
   float max_score = inference_result[max_index];
+  mu_.Lock();
   std::cout << "Frame " << container->frame_count++ << std::endl;
+  mu_.Unlock();
   std::cout << "-----------------------------" << std::endl;
   std::cout << "Label id " << max_index << std::endl;
   std::cout << "Max Score: " << max_score << std::endl;
@@ -162,7 +164,10 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
     GstBuffer *buffer = CHECK_NOTNULL(gst_sample_get_buffer(sample));
     // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
-      if (container->run_type == RunType::kRunner) {
+      mu_.ReaderLock();
+      RunType curr_type = container->run_type;
+      mu_.ReaderUnlock();
+      if (curr_type == RunType::kRunner) {
         coral::Allocator *allocator =
             CHECK_NOTNULL(container->runner->GetInputTensorAllocator());
         // Create pipeline tensor
@@ -186,9 +191,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
             CHECK_NOTNULL(container->interpreter->tensor(output_index));
         const uint8_t *out_tensor_data =
             tflite::GetTensorData<uint8_t>(out_tensor);
-        mu_.Lock();
         PrintInferenceResults(container, out_tensor_data, out_tensor->bytes);
-        mu_.Unlock();
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
         std::cout << "Interpreter: " << elapsed_time.count() << " ms"
@@ -214,7 +217,6 @@ void ResultConsumer(Container *runner_container) {
   // Only used for the the first frame inference
   start = std::chrono::system_clock::now();
   while (runner_container->runner->Pop(&output_tensors)) {
-    mu_.Lock();
     coral::PipelineTensor out_tensor = output_tensors[0];
     const uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
     PrintInferenceResults(runner_container, output_tensor, out_tensor.bytes);
@@ -225,7 +227,6 @@ void ResultConsumer(Container *runner_container) {
     std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
     coral::FreeTensors(output_tensors,
                        runner_container->runner->GetOutputTensorAllocator());
-    mu_.Unlock();
     output_tensors.clear();
   }
 }
@@ -379,15 +380,21 @@ int main(int argc, char *argv[]) {
     while (!loop_container.loop_finished) {
       std::cin >> input;
       if (input == 'n') {
-        mu_.Lock();
-        if (runner_container.run_type == RunType::kRunner) {
+        mu_.ReaderLock();
+        RunType curr_runtype = runner_container.run_type;
+        mu_.ReaderUnlock();
+        if (curr_runtype == RunType::kRunner) {
+          mu_.Lock();
           runner_container.run_type = RunType::kInterpreter;
+          mu_.Unlock();
           std::cout << "Switching to interpreter" << std::endl;
         } else {
+          mu_.Lock();
           runner_container.run_type = RunType::kRunner;
+          mu_.Unlock();
           std::cout << "Switching to runner" << std::endl;
         }
-        mu_.Unlock();
+        
       }
     }
   };

@@ -15,12 +15,7 @@
 // To run this file
 //    1) Build the file with: make CPU=aarch64 examples
 //    2) Run: executable path/to/video
-// Flag options:
-// -model_path to specify where the models are located
-// -video_path to specify where the video file is located
-// -runner_type to specify initial run type
-// -num_segments to specify current number of Edge TPUs
-
+// Enter --help for more detail on flags
 #include <gst/gst.h>
 #include <algorithm>
 #include <chrono>
@@ -49,15 +44,11 @@ ABSL_FLAG(std::string, model_path, "./test/inception_v3_299_quant",
 ABSL_FLAG(std::string, video_path, "./test/video_device.mp4",
           "Path to the video file.");
 
-ABSL_FLAG(std::string, runner_type, "Runner",
-          "Type of runner (Runner or Interpreter).");
+ABSL_FLAG(bool, use_pipeline_runner, true, "Determines run type (Pipeline or Interpreter).");
 
 ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
 
 ABSL_FLAG(int, fps, 60, "Framerate of video.");
-
-// Protects: frame_count and run_type in Container struct
-absl::Mutex mu_;
 
 // Enumerator for type of interpreter used
 enum class RunType {
@@ -69,9 +60,7 @@ enum class RunType {
 struct Container {
   coral::PipelinedModelRunner *runner;
   tflite::Interpreter *interpreter;
-  float scale;
-  int32_t zero_point;
-  int frame_count GUARDED_BY(mu_);
+  absl::Mutex mu_;  // Protects: run_type in Container struct
   RunType run_type GUARDED_BY(mu_);
 };
 
@@ -129,20 +118,21 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
 }
 
 void PrintInferenceResults(Container *container, const uint8_t *data,
-                           int size) {
-  std::vector<float> inference_result(size);
+                           const TfLiteTensor *out_tensor) {
+  std::vector<float> inference_result(out_tensor->bytes);
+  static int frame_count = 0;
   // Dequantize output tensor
   for (size_t i = 0; i < inference_result.size(); i++) {
-    inference_result[i] = (data[i] - container->zero_point) * container->scale;
+    inference_result[i] =
+        (data[i] - out_tensor->params.zero_point) * out_tensor->params.scale;
   }
   // Find and print out max score of each frame inference result
   auto max_element =
       std::max_element(inference_result.begin(), inference_result.end());
   int max_index = std::distance(inference_result.begin(), max_element);
   float max_score = inference_result[max_index];
-  mu_.Lock();
-  std::cout << "Frame " << container->frame_count++ << std::endl;
-  mu_.Unlock();
+  { absl::WriterMutexLock(&(container->mu_));
+  std::cout << "Frame " << frame_count++ << std::endl; }
   std::cout << "-----------------------------" << std::endl;
   std::cout << "Label id " << max_index << std::endl;
   std::cout << "Max Score: " << max_score << std::endl;
@@ -164,9 +154,9 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
     GstBuffer *buffer = CHECK_NOTNULL(gst_sample_get_buffer(sample));
     // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
-      mu_.ReaderLock();
-      RunType curr_type = container->run_type;
-      mu_.ReaderUnlock();
+      RunType curr_type;
+      { absl::ReaderMutexLock(&(container->mu_));
+       curr_type = container->run_type; }
       if (curr_type == RunType::kRunner) {
         coral::Allocator *allocator =
             CHECK_NOTNULL(container->runner->GetInputTensorAllocator());
@@ -187,11 +177,11 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
         CHECK_EQ(container->interpreter->Invoke(), kTfLiteOk);
         // Retrieve output tensor and output tensor data
         const int output_index = container->interpreter->outputs()[0];
-        const TfLiteTensor *out_tensor =
+        const TfLiteTensor *tensor_data =
             CHECK_NOTNULL(container->interpreter->tensor(output_index));
         const uint8_t *out_tensor_data =
-            tflite::GetTensorData<uint8_t>(out_tensor);
-        PrintInferenceResults(container, out_tensor_data, out_tensor->bytes);
+            tflite::GetTensorData<uint8_t>(tensor_data);
+        PrintInferenceResults(container, out_tensor_data, tensor_data);
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
         std::cout << "Interpreter: " << elapsed_time.count() << " ms"
@@ -217,9 +207,13 @@ void ResultConsumer(Container *runner_container) {
   // Only used for the the first frame inference
   start = std::chrono::system_clock::now();
   while (runner_container->runner->Pop(&output_tensors)) {
+    // Retrieve output tensor and output tensor data
+    const int output_index = runner_container->interpreter->outputs()[0];
+    const TfLiteTensor *tensor_data =
+        CHECK_NOTNULL(runner_container->interpreter->tensor(output_index));
     coral::PipelineTensor out_tensor = output_tensors[0];
     const uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
-    PrintInferenceResults(runner_container, output_tensor, out_tensor.bytes);
+    PrintInferenceResults(runner_container, output_tensor, tensor_data);
     std::chrono::duration<double, std::milli> elapsed_time =
         std::chrono::system_clock::now() - start;
     start = std::chrono::system_clock::now();
@@ -294,8 +288,6 @@ int main(int argc, char *argv[]) {
   const std::string full_model_path =
       absl::StrCat(model_path_base, "_edgetpu.tflite");
 
-  Container runner_container;
-
   // Create vector of tflite interpreters for model segments
   std::vector<std::unique_ptr<tflite::Interpreter>> managed_interpreters(
       num_segments);
@@ -317,13 +309,6 @@ int main(int argc, char *argv[]) {
   width = input_tensor->dims->data[1];
   height = input_tensor->dims->data[2];
 
-  // Get scale and zero_point variables from output tensor
-  const int output_index = all_interpreters[num_segments - 1]->outputs()[0];
-  const TfLiteTensor *tensor_data =
-      CHECK_NOTNULL(all_interpreters[num_segments - 1]->tensor(output_index));
-  runner_container.scale = tensor_data->params.scale;
-  runner_container.zero_point = tensor_data->params.zero_point;
-
   // Create tflite::Interpreter
   auto full_model = CHECK_NOTNULL(
       tflite::FlatBufferModel::BuildFromFile(full_model_path.c_str()));
@@ -334,13 +319,11 @@ int main(int argc, char *argv[]) {
   std::unique_ptr<coral::PipelinedModelRunner> runner(
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
-  runner_container.runner = runner.get();
-  runner_container.interpreter = interpreter.get();
-  runner_container.frame_count = 0;
+  struct Container runner_container = {runner.get(), interpreter.get()};
 
   // Determine initial run type of program
-  const std::string run_type = absl::GetFlag(FLAGS_runner_type);
-  if (run_type == "Runner") {
+  const bool run_type = absl::GetFlag(FLAGS_use_pipeline_runner);
+  if (run_type) {
     runner_container.run_type = RunType::kRunner;
   } else {
     runner_container.run_type = RunType::kInterpreter;
@@ -380,21 +363,18 @@ int main(int argc, char *argv[]) {
     while (!loop_container.loop_finished) {
       std::cin >> input;
       if (input == 'n') {
-        mu_.ReaderLock();
-        RunType curr_runtype = runner_container.run_type;
-        mu_.ReaderUnlock();
+        RunType curr_runtype;
+        { absl::ReaderMutexLock(&(runner_container.mu_));
+        curr_runtype = runner_container.run_type; }
         if (curr_runtype == RunType::kRunner) {
-          mu_.Lock();
+          absl::WriterMutexLock(&(runner_container.mu_));
           runner_container.run_type = RunType::kInterpreter;
-          mu_.Unlock();
           std::cout << "Switching to interpreter" << std::endl;
         } else {
-          mu_.Lock();
+          absl::WriterMutexLock(&(runner_container.mu_));
           runner_container.run_type = RunType::kRunner;
-          mu_.Unlock();
           std::cout << "Switching to runner" << std::endl;
         }
-        
       }
     }
   };

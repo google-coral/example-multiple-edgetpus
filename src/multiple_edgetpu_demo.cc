@@ -132,7 +132,7 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
   return interpreter;
 }
 
-void PrintInferenceResults(Container *container, const uint8_t *data,
+void PrintInferenceResults(const uint8_t *data,
                            const TfLiteTensor *out_tensor) {
   std::vector<float> inference_result(out_tensor->bytes);
   static int frame_count = 0;
@@ -146,10 +146,7 @@ void PrintInferenceResults(Container *container, const uint8_t *data,
       std::max_element(inference_result.begin(), inference_result.end());
   const int max_index = std::distance(inference_result.begin(), max_element);
   const float max_score = inference_result[max_index];
-  {
-    absl::WriterMutexLock(&(container->mu_));
-    std::cout << "Frame " << frame_count++ << std::endl;
-  }
+  std::cout << "Frame " << frame_count++ << std::endl;
   std::cout << "-----------------------------" << std::endl;
   std::cout << "Label id " << max_index << std::endl;
   std::cout << "Max Score: " << max_score << std::endl;
@@ -200,7 +197,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
             CHECK_NOTNULL(container->interpreter->tensor(output_index));
         const uint8_t *out_tensor_data =
             tflite::GetTensorData<uint8_t>(tensor_data);
-        PrintInferenceResults(container, out_tensor_data, tensor_data);
+        PrintInferenceResults(out_tensor_data, tensor_data);
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
         std::cout << "Interpreter: " << elapsed_time.count() << " ms"
@@ -232,7 +229,7 @@ void ResultConsumer(Container *runner_container) {
         CHECK_NOTNULL(runner_container->interpreter->tensor(output_index));
     coral::PipelineTensor out_tensor = output_tensors[0];
     const uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
-    PrintInferenceResults(runner_container, output_tensor, tensor_data);
+    PrintInferenceResults(output_tensor, tensor_data);
     std::chrono::duration<double, std::milli> elapsed_time =
         std::chrono::system_clock::now() - start;
     start = std::chrono::system_clock::now();

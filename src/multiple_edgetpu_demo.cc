@@ -44,7 +44,8 @@ ABSL_FLAG(std::string, model_path, "./test/inception_v3_299_quant",
 ABSL_FLAG(std::string, video_path, "./test/video_device.mp4",
           "Path to the video file.");
 
-ABSL_FLAG(bool, use_pipeline_runner, true, "Determines run type (Pipeline or Interpreter).");
+ABSL_FLAG(bool, use_multiple_edgetpu, true,
+          "Using PipelinedModelRunner or tflite::Interpreter.");
 
 ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
 
@@ -52,7 +53,7 @@ ABSL_FLAG(int, fps, 60, "Framerate of video.");
 
 // Enumerator for type of interpreter used
 enum class RunType {
-  kRunner,
+  kPipelineRunner,
   kInterpreter,
 };
 
@@ -60,8 +61,15 @@ enum class RunType {
 struct Container {
   coral::PipelinedModelRunner *runner;
   tflite::Interpreter *interpreter;
-  absl::Mutex mu_;  // Protects: run_type in Container struct
+  absl::Mutex mu_;
   RunType run_type GUARDED_BY(mu_);
+
+  Container(coral::PipelinedModelRunner *runner_,
+            tflite::Interpreter *interpreter_, bool run_type_) {
+    runner = runner_;
+    interpreter = interpreter_;
+    run_type = run_type_ ? RunType::kPipelineRunner : RunType::kInterpreter;
+  }
 };
 
 // Struct for model pipeline runner and gloop
@@ -69,6 +77,13 @@ struct LoopContainer {
   GMainLoop *loop;
   coral::PipelinedModelRunner *runner;
   bool loop_finished;
+
+  LoopContainer(GMainLoop *loop_, coral::PipelinedModelRunner *runner_,
+                bool loop_finished_) {
+    loop = loop_;
+    runner = runner_;
+    loop_finished = loop_finished_;
+  }
 };
 
 // Function that returns a vector of Edge TPU contexts
@@ -127,12 +142,14 @@ void PrintInferenceResults(Container *container, const uint8_t *data,
         (data[i] - out_tensor->params.zero_point) * out_tensor->params.scale;
   }
   // Find and print out max score of each frame inference result
-  auto max_element =
+  const auto max_element =
       std::max_element(inference_result.begin(), inference_result.end());
-  int max_index = std::distance(inference_result.begin(), max_element);
-  float max_score = inference_result[max_index];
-  { absl::WriterMutexLock(&(container->mu_));
-  std::cout << "Frame " << frame_count++ << std::endl; }
+  const int max_index = std::distance(inference_result.begin(), max_element);
+  const float max_score = inference_result[max_index];
+  {
+    absl::WriterMutexLock(&(container->mu_));
+    std::cout << "Frame " << frame_count++ << std::endl;
+  }
   std::cout << "-----------------------------" << std::endl;
   std::cout << "Label id " << max_index << std::endl;
   std::cout << "Max Score: " << max_score << std::endl;
@@ -155,9 +172,11 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
     // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       RunType curr_type;
-      { absl::ReaderMutexLock(&(container->mu_));
-       curr_type = container->run_type; }
-      if (curr_type == RunType::kRunner) {
+      {
+        absl::ReaderMutexLock(&(container->mu_));
+        curr_type = container->run_type;
+      }
+      if (curr_type == RunType::kPipelineRunner) {
         coral::Allocator *allocator =
             CHECK_NOTNULL(container->runner->GetInputTensorAllocator());
         // Create pipeline tensor
@@ -173,7 +192,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
             container->interpreter->typed_input_tensor<uint8_t>(0));
         std::memcpy(input_tensor, info.data, info.size);
         // Run inference on input tensor
-        const auto &start = std::chrono::system_clock::now();
+        const auto start = std::chrono::system_clock::now();
         CHECK_EQ(container->interpreter->Invoke(), kTfLiteOk);
         // Retrieve output tensor and output tensor data
         const int output_index = container->interpreter->outputs()[0];
@@ -272,9 +291,12 @@ int main(int argc, char *argv[]) {
   // Initialize Google's logging library.
   google::InitGoogleLogging(argv[0]);
 
-  // Create all model path strings
+  // Parse user flags
   const std::string model_path_base = absl::GetFlag(FLAGS_model_path);
   const int num_segments = absl::GetFlag(FLAGS_num_segments);
+  const bool run_type = absl::GetFlag(FLAGS_use_multiple_edgetpu);
+  const std::string video_path = absl::GetFlag(FLAGS_video_path);
+  const int fps = absl::GetFlag(FLAGS_fps);
 
   // Get available devices
   auto tpu_contexts = PrepareEdgeTPUContexts(num_segments);
@@ -319,19 +341,9 @@ int main(int argc, char *argv[]) {
   std::unique_ptr<coral::PipelinedModelRunner> runner(
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
-  struct Container runner_container = {runner.get(), interpreter.get()};
-
-  // Determine initial run type of program
-  const bool run_type = absl::GetFlag(FLAGS_use_pipeline_runner);
-  if (run_type) {
-    runner_container.run_type = RunType::kRunner;
-  } else {
-    runner_container.run_type = RunType::kInterpreter;
-  }
+  Container runner_container(runner.get(), interpreter.get(), run_type);
 
   // Create Gstreamer pipeline
-  const std::string video_path = absl::GetFlag(FLAGS_video_path);
-  const int fps = absl::GetFlag(FLAGS_fps);
   const std::string pipeline_src = absl::Substitute(
       "filesrc location=$0 ! decodebin ! glfilterbin filter=glbox ! videorate "
       "! video/x-raw,framerate=$1/1,width=$2,height=$3,format=RGB ! appsink "
@@ -347,10 +359,7 @@ int main(int argc, char *argv[]) {
 
   // Setting up bus watcher
   GstBus *bus = gst_element_get_bus(pipeline);
-  LoopContainer loop_container;
-  loop_container.loop = loop;
-  loop_container.runner = runner.get();
-  loop_container.loop_finished = false;
+  LoopContainer loop_container(loop, runner.get(), false);
   gst_bus_add_watch(bus, OnBusMessage, &loop_container);
   gst_object_unref(bus);
 
@@ -363,16 +372,12 @@ int main(int argc, char *argv[]) {
     while (!loop_container.loop_finished) {
       std::cin >> input;
       if (input == 'n') {
-        RunType curr_runtype;
-        { absl::ReaderMutexLock(&(runner_container.mu_));
-        curr_runtype = runner_container.run_type; }
-        if (curr_runtype == RunType::kRunner) {
-          absl::WriterMutexLock(&(runner_container.mu_));
+        absl::WriterMutexLock(&(runner_container.mu_));
+        if (runner_container.run_type == RunType::kPipelineRunner) {
           runner_container.run_type = RunType::kInterpreter;
           std::cout << "Switching to interpreter" << std::endl;
         } else {
-          absl::WriterMutexLock(&(runner_container.mu_));
-          runner_container.run_type = RunType::kRunner;
+          runner_container.run_type = RunType::kPipelineRunner;
           std::cout << "Switching to runner" << std::endl;
         }
       }

@@ -14,7 +14,7 @@
 
 // To run this file
 //    1) Build the file with: make CPU=aarch64 examples
-//    2) Run: executable path/to/video      fffffffffffFamilyIsImportant123*()
+//    2) Run: executable path/to/video
 
 // Enter --help for more detail on flags
 #include <gst/gst.h>
@@ -52,24 +52,18 @@ ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
 
 ABSL_FLAG(int, fps, 60, "Framerate of video.");
 
-// Enumerator for type of interpreter used
-enum class RunType {
-  kPipelineRunner,
-  kInterpreter,
-};
-
 // Struct for model pipeline runner, tflite::Interpreter, and relevant variables
 struct Container {
   coral::PipelinedModelRunner *runner;
   tflite::Interpreter *interpreter;
   absl::Mutex mu_;
-  RunType run_type GUARDED_BY(mu_);
+  bool use_multiple_edgetpu GUARDED_BY(mu_);
 
   Container(coral::PipelinedModelRunner *runner_,
-            tflite::Interpreter *interpreter_, RunType run_type_) {
+            tflite::Interpreter *interpreter_, bool run_type_) {
     runner = runner_;
     interpreter = interpreter_;
-    run_type = run_type_;
+    use_multiple_edgetpu = run_type_;
   }
 };
 
@@ -162,12 +156,12 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
     GstBuffer *buffer = CHECK_NOTNULL(gst_sample_get_buffer(sample));
     // Read buffer into mapinfo
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
-      RunType curr_type;
+      bool curr_type;
       {
         absl::ReaderMutexLock(&(container->mu_));
-        curr_type = container->run_type;
+        curr_type = container->use_multiple_edgetpu;
       }
-      if (curr_type == RunType::kPipelineRunner) {
+      if (curr_type) {
         coral::Allocator *allocator =
             CHECK_NOTNULL(container->runner->GetInputTensorAllocator());
         // Create pipeline tensor
@@ -285,7 +279,7 @@ int main(int argc, char *argv[]) {
   // Parse user flags
   const std::string model_path_base = absl::GetFlag(FLAGS_model_path);
   const int num_segments = absl::GetFlag(FLAGS_num_segments);
-  const bool run_type = absl::GetFlag(FLAGS_use_multiple_edgetpu);
+  const bool use_multiple_edgetpu = absl::GetFlag(FLAGS_use_multiple_edgetpu);
   const std::string video_path = absl::GetFlag(FLAGS_video_path);
   const int fps = absl::GetFlag(FLAGS_fps);
 
@@ -334,7 +328,7 @@ int main(int argc, char *argv[]) {
   CHECK_NOTNULL(runner);
   Container runner_container(
       runner.get(), interpreter.get(),
-      run_type ? RunType::kPipelineRunner : RunType::kInterpreter);
+      use_multiple_edgetpu);
 
   // Create Gstreamer pipeline
   const std::string pipeline_src = absl::Substitute(
@@ -366,11 +360,11 @@ int main(int argc, char *argv[]) {
       std::cin >> input;
       if (input == 'n') {
         absl::WriterMutexLock(&(runner_container.mu_));
-        if (runner_container.run_type == RunType::kPipelineRunner) {
-          runner_container.run_type = RunType::kInterpreter;
+        if (runner_container.use_multiple_edgetpu) {
+          runner_container.use_multiple_edgetpu = false;
           std::cout << "Switching to interpreter" << std::endl;
         } else {
-          runner_container.run_type = RunType::kPipelineRunner;
+          runner_container.use_multiple_edgetpu = true;
           std::cout << "Switching to runner" << std::endl;
         }
       }

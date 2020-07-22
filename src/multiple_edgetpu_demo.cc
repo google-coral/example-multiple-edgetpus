@@ -14,7 +14,8 @@
 
 // To run this file
 //    1) Build the file with: make CPU=aarch64 examples
-//    2) Run: executable path/to/video
+//    2) Run: executable path/to/video      fffffffffffFamilyIsImportant123*()
+
 // Enter --help for more detail on flags
 #include <gst/gst.h>
 #include <algorithm>
@@ -65,10 +66,10 @@ struct Container {
   RunType run_type GUARDED_BY(mu_);
 
   Container(coral::PipelinedModelRunner *runner_,
-            tflite::Interpreter *interpreter_, bool run_type_) {
+            tflite::Interpreter *interpreter_, RunType run_type_) {
     runner = runner_;
     interpreter = interpreter_;
-    run_type = run_type_ ? RunType::kPipelineRunner : RunType::kInterpreter;
+    run_type = run_type_;
   }
 };
 
@@ -77,13 +78,6 @@ struct LoopContainer {
   GMainLoop *loop;
   coral::PipelinedModelRunner *runner;
   bool loop_finished;
-
-  LoopContainer(GMainLoop *loop_, coral::PipelinedModelRunner *runner_,
-                bool loop_finished_) {
-    loop = loop_;
-    runner = runner_;
-    loop_finished = loop_finished_;
-  }
 };
 
 // Function that returns a vector of Edge TPU contexts
@@ -338,7 +332,9 @@ int main(int argc, char *argv[]) {
   std::unique_ptr<coral::PipelinedModelRunner> runner(
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
-  Container runner_container(runner.get(), interpreter.get(), run_type);
+  Container runner_container(
+      runner.get(), interpreter.get(),
+      run_type ? RunType::kPipelineRunner : RunType::kInterpreter);
 
   // Create Gstreamer pipeline
   const std::string pipeline_src = absl::Substitute(
@@ -356,7 +352,7 @@ int main(int argc, char *argv[]) {
 
   // Setting up bus watcher
   GstBus *bus = gst_element_get_bus(pipeline);
-  LoopContainer loop_container(loop, runner.get(), false);
+  LoopContainer loop_container = {loop, runner.get(), false};
   gst_bus_add_watch(bus, OnBusMessage, &loop_container);
   gst_object_unref(bus);
 

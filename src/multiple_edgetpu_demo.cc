@@ -58,12 +58,16 @@ struct Container {
   tflite::Interpreter *interpreter;
   absl::Mutex mu_;
   bool use_multiple_edgetpu GUARDED_BY(mu_);
+  double interpreter_latency;
+  int interpreter_inference_count;
 
   Container(coral::PipelinedModelRunner *runner_,
             tflite::Interpreter *interpreter_, bool run_type_) {
     runner = runner_;
     interpreter = interpreter_;
     use_multiple_edgetpu = run_type_;
+    interpreter_latency = 0;
+    interpreter_inference_count = 0;
   }
 };
 
@@ -188,6 +192,8 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
         PrintInferenceResults(out_tensor_data, tensor_data);
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
+        container->interpreter_latency += elapsed_time.count();
+        container->interpreter_inference_count++;
         std::cout << "Interpreter: " << elapsed_time.count() << " ms"
                   << std::endl;
         std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
@@ -326,9 +332,8 @@ int main(int argc, char *argv[]) {
   std::unique_ptr<coral::PipelinedModelRunner> runner(
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
-  Container runner_container(
-      runner.get(), interpreter.get(),
-      use_multiple_edgetpu);
+  Container runner_container(runner.get(), interpreter.get(),
+                             use_multiple_edgetpu);
 
   // Create Gstreamer pipeline
   const std::string pipeline_src = absl::Substitute(
@@ -367,6 +372,24 @@ int main(int argc, char *argv[]) {
           runner_container.use_multiple_edgetpu = true;
           std::cout << "Switching to runner" << std::endl;
         }
+      }
+    }
+    if (loop_container.loop_finished) {
+      std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+      std::cout << "tflite::Interpreter Latency" << std::endl;
+      std::cout << "Total time: " << runner_container.interpreter_latency
+                << " ms" << std::endl;
+      std::cout << "Total inferences: "
+                << runner_container.interpreter_inference_count << std::endl;
+      const auto pipeline_stats = runner_container.runner->GetSegmentStats();
+      for (size_t i = 0; i < pipeline_stats.size(); i++) {
+        std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+        std::cout << "Pipeline Runner Segment " << i << " Latency" << std::endl;
+        std::cout << "Total time: "
+                  << pipeline_stats[i].total_time_ns / 1000000.0 << " ms"
+                  << std::endl;
+        std::cout << "Total inferences: " << pipeline_stats[i].num_inferences
+                  << std::endl;
       }
     }
   };

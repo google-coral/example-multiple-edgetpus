@@ -66,7 +66,7 @@ struct Container {
     runner = runner_;
     interpreter = interpreter_;
     use_multiple_edgetpu = run_type_;
-    interpreter_total_time = 0;
+    interpreter_total_time_ms = 0;
     interpreter_inference_count = 0;
   }
 };

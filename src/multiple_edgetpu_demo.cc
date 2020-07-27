@@ -58,7 +58,7 @@ struct Container {
   tflite::Interpreter *interpreter;
   absl::Mutex mu_;
   bool use_multiple_edgetpu GUARDED_BY(mu_);
-  double interpreter_total_time;
+  double interpreter_total_time_ms;
   int interpreter_inference_count;
 
   Container(coral::PipelinedModelRunner *runner_,
@@ -192,7 +192,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
         PrintInferenceResults(out_tensor_data, tensor_data);
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
-        container->interpreter_total_time += elapsed_time.count();
+        container->interpreter_total_time_ms += elapsed_time.count();
         container->interpreter_inference_count++;
         std::cout << "Interpreter: " << elapsed_time.count() << " ms"
                   << std::endl;
@@ -257,12 +257,12 @@ void KeyboardWatch(Container *runner_container, LoopContainer *loop_container) {
   if (loop_container->loop_finished) {
     std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
     std::cout << "tflite::Interpreter Latency" << std::endl;
-    std::cout << "Total time: " << runner_container->interpreter_total_time
+    std::cout << "Total time: " << runner_container->interpreter_total_time_ms
               << " ms" << std::endl;
     std::cout << "Total inferences: "
               << runner_container->interpreter_inference_count << std::endl;
     std::cout << "Latency: "
-              << runner_container->interpreter_total_time /
+              << runner_container->interpreter_total_time_ms /
                      runner_container->interpreter_inference_count
               << " ms/frame" << std::endl;
     const auto pipeline_stats = runner_container->runner->GetSegmentStats();

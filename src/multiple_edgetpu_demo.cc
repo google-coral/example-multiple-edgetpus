@@ -58,16 +58,14 @@ struct Container {
   tflite::Interpreter *interpreter;
   absl::Mutex mu_;
   bool use_multiple_edgetpu GUARDED_BY(mu_);
-  double interpreter_total_time_ms;
-  int interpreter_inference_count;
+  double interpreter_total_time_ms = 0;
+  int interpreter_inference_count = 0;
 
   Container(coral::PipelinedModelRunner *runner_,
             tflite::Interpreter *interpreter_, bool run_type_) {
     runner = runner_;
     interpreter = interpreter_;
     use_multiple_edgetpu = run_type_;
-    interpreter_total_time_ms = 0;
-    interpreter_inference_count = 0;
   }
 };
 
@@ -254,29 +252,32 @@ void KeyboardWatch(Container *runner_container, LoopContainer *loop_container) {
       }
     }
   }
-  if (loop_container->loop_finished) {
+}
+
+// Function that prints latency results at the end of the program
+// Input: Container*
+void PrintLatencyResults(Container *container) {
+  std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+  std::cout << "tflite::Interpreter Latency" << std::endl;
+  std::cout << "Total time: " << container->interpreter_total_time_ms
+            << " ms" << std::endl;
+  std::cout << "Total inferences: "
+            << container->interpreter_inference_count << std::endl;
+  std::cout << "Latency: "
+            << container->interpreter_total_time_ms /
+                   container->interpreter_inference_count
+            << " ms/frame" << std::endl;
+  const auto pipeline_stats = container->runner->GetSegmentStats();
+  for (size_t i = 0; i < pipeline_stats.size(); i++) {
+    double pipeline_time = pipeline_stats[i].total_time_ns / 1000000.0;
     std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
-    std::cout << "tflite::Interpreter Latency" << std::endl;
-    std::cout << "Total time: " << runner_container->interpreter_total_time_ms
-              << " ms" << std::endl;
-    std::cout << "Total inferences: "
-              << runner_container->interpreter_inference_count << std::endl;
+    std::cout << "Pipeline Runner Segment " << i << " Latency" << std::endl;
+    std::cout << "Total time: " << pipeline_time << " ms" << std::endl;
+    std::cout << "Total inferences: " << pipeline_stats[i].num_inferences
+              << std::endl;
     std::cout << "Latency: "
-              << runner_container->interpreter_total_time_ms /
-                     runner_container->interpreter_inference_count
+              << pipeline_time / pipeline_stats[i].num_inferences
               << " ms/frame" << std::endl;
-    const auto pipeline_stats = runner_container->runner->GetSegmentStats();
-    for (size_t i = 0; i < pipeline_stats.size(); i++) {
-      double pipeline_time = pipeline_stats[i].total_time_ns / 1000000.0;
-      std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
-      std::cout << "Pipeline Runner Segment " << i << " Latency" << std::endl;
-      std::cout << "Total time: " << pipeline_time << " ms" << std::endl;
-      std::cout << "Total inferences: " << pipeline_stats[i].num_inferences
-                << std::endl;
-      std::cout << "Latency: "
-                << pipeline_time / pipeline_stats[i].num_inferences
-                << " ms/frame" << std::endl;
-    }
   }
 }
 
@@ -418,5 +419,6 @@ int main(int argc, char *argv[]) {
   // Cleanup
   gst_element_set_state(pipeline, GST_STATE_NULL);
   gst_object_unref(pipeline);
+  PrintLatencyResults(&runner_container);
   return 0;
 }

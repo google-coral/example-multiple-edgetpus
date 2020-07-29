@@ -256,7 +256,7 @@ void KeyboardWatch(Container *runner_container, LoopContainer *loop_container) {
 
 // Function that prints latency results at the end of the program
 // Input: Container*
-void PrintLatencyResults(Container *container) {
+void PrintLatencyResults(const Container *container) {
   std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
   std::cout << "tflite::Interpreter Latency" << std::endl;
   std::cout << "Total time: " << container->interpreter_total_time_ms

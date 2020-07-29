@@ -58,6 +58,8 @@ struct Container {
   tflite::Interpreter *interpreter;
   absl::Mutex mu_;
   bool use_multiple_edgetpu GUARDED_BY(mu_);
+  double interpreter_total_time_ms = 0;
+  int interpreter_inference_count = 0;
 
   Container(coral::PipelinedModelRunner *runner_,
             tflite::Interpreter *interpreter_, bool run_type_) {
@@ -188,6 +190,8 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
         PrintInferenceResults(out_tensor_data, tensor_data);
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
+        container->interpreter_total_time_ms += elapsed_time.count();
+        container->interpreter_inference_count++;
         std::cout << "Interpreter: " << elapsed_time.count() << " ms"
                   << std::endl;
         std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
@@ -226,6 +230,54 @@ void ResultConsumer(Container *runner_container) {
     coral::FreeTensors(output_tensors,
                        runner_container->runner->GetOutputTensorAllocator());
     output_tensors.clear();
+  }
+}
+
+// Function that reads user input during inference to switch between
+// tflite::Interpreter and Pipeline Runner. Also prints out latency results
+// at the end of the program.
+// Inputs: Container* and LoopContainer*
+void KeyboardWatch(Container *runner_container, LoopContainer *loop_container) {
+  char input;
+  while (!loop_container->loop_finished) {
+    std::cin >> input;
+    if (input == 'n') {
+      absl::WriterMutexLock(&(runner_container->mu_));
+      if (runner_container->use_multiple_edgetpu) {
+        runner_container->use_multiple_edgetpu = false;
+        std::cout << "Switching to interpreter" << std::endl;
+      } else {
+        runner_container->use_multiple_edgetpu = true;
+        std::cout << "Switching to runner" << std::endl;
+      }
+    }
+  }
+}
+
+// Function that prints latency results at the end of the program
+// Input: Container*
+void PrintLatencyResults(const Container *container) {
+  std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+  std::cout << "tflite::Interpreter Latency" << std::endl;
+  std::cout << "Total time: " << container->interpreter_total_time_ms
+            << " ms" << std::endl;
+  std::cout << "Total inferences: "
+            << container->interpreter_inference_count << std::endl;
+  std::cout << "Latency: "
+            << container->interpreter_total_time_ms /
+                   container->interpreter_inference_count
+            << " ms/frame" << std::endl;
+  const auto pipeline_stats = container->runner->GetSegmentStats();
+  for (size_t i = 0; i < pipeline_stats.size(); i++) {
+    double pipeline_time = pipeline_stats[i].total_time_ns / 1000000.0;
+    std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+    std::cout << "Pipeline Runner Segment " << i << " Latency" << std::endl;
+    std::cout << "Total time: " << pipeline_time << " ms" << std::endl;
+    std::cout << "Total inferences: " << pipeline_stats[i].num_inferences
+              << std::endl;
+    std::cout << "Latency: "
+              << pipeline_time / pipeline_stats[i].num_inferences
+              << " ms/frame" << std::endl;
   }
 }
 
@@ -326,9 +378,8 @@ int main(int argc, char *argv[]) {
   std::unique_ptr<coral::PipelinedModelRunner> runner(
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
-  Container runner_container(
-      runner.get(), interpreter.get(),
-      use_multiple_edgetpu);
+  Container runner_container(runner.get(), interpreter.get(),
+                             use_multiple_edgetpu);
 
   // Create Gstreamer pipeline
   const std::string pipeline_src = absl::Substitute(
@@ -354,26 +405,9 @@ int main(int argc, char *argv[]) {
   g_signal_connect(sink, "new-sample", reinterpret_cast<GCallback>(OnNewSample),
                    &runner_container);
 
-  auto keyboard_watch = [&runner_container, &loop_container]() {
-    char input;
-    while (!loop_container.loop_finished) {
-      std::cin >> input;
-      if (input == 'n') {
-        absl::WriterMutexLock(&(runner_container.mu_));
-        if (runner_container.use_multiple_edgetpu) {
-          runner_container.use_multiple_edgetpu = false;
-          std::cout << "Switching to interpreter" << std::endl;
-        } else {
-          runner_container.use_multiple_edgetpu = true;
-          std::cout << "Switching to runner" << std::endl;
-        }
-      }
-    }
-  };
-
   // Start consumer and keyboard watching thread
   auto consumer = std::thread(ResultConsumer, &runner_container);
-  auto watcher = std::thread(keyboard_watch);
+  auto watcher = std::thread(KeyboardWatch, &runner_container, &loop_container);
 
   // Start the pipeline, runs until interrupted, EOS or error
   gst_element_set_state(pipeline, GST_STATE_PLAYING);
@@ -385,5 +419,6 @@ int main(int argc, char *argv[]) {
   // Cleanup
   gst_element_set_state(pipeline, GST_STATE_NULL);
   gst_object_unref(pipeline);
+  PrintLatencyResults(&runner_container);
   return 0;
 }

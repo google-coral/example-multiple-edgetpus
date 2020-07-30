@@ -33,7 +33,7 @@
 #include "absl/synchronization/mutex.h"
 #include "edgetpu.h"
 #include "glog/logging.h"
-#include "label_utils.h"
+#include "utils.h"
 #include "src/cpp/pipeline/pipelined_model_runner.h"
 #include "src/cpp/pipeline/utils.h"
 #include "tensorflow/lite/interpreter.h"

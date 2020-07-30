@@ -1,4 +1,4 @@
-#include "label_utils.h"
+#include "utils.h"
 
 #include <memory>
 
@@ -10,6 +10,7 @@ namespace coral {
 std::unordered_map<int, std::string> ReadLabelFile(
     const std::string& file_path) {
   std::unordered_map<int, std::string> labels;
+  std::unordered_map<int, std::string> empty;
   std::ifstream file(file_path.c_str());
   if (file.is_open()) {
     std::string line;
@@ -21,7 +22,7 @@ std::unordered_map<int, std::string> ReadLabelFile(
         int label_id;
         if (!absl::SimpleAtoi(fields[0], &label_id)) {
           std::cerr << "The label id must be an integer" << std::endl;
-          std::abort();
+          return empty;
         }
         const std::string& label_name = fields[1];
         labels[label_id] = label_name;

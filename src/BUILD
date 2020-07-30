@@ -13,9 +13,9 @@
 # limitations under the License.
 
 cc_library(
-    name = "label_utils",
-    srcs = ["label_utils.cc"],
-    hdrs = ["label_utils.h"],
+    name = "utils",
+    srcs = ["utils.cc"],
+    hdrs = ["utils.h"],
     deps = [
         "@com_google_absl//absl/strings",
     ],
@@ -25,7 +25,7 @@ cc_binary(
     name = "multiple_edgetpu_demo",
     srcs = ["multiple_edgetpu_demo.cc"],
     deps = [
-        ":label_utils",
+        ":utils",
         "@local_gst//:gstreamer",
         "@libedgetpu//:header",
         "@edgetpu//src/cpp/pipeline:pipelined_model_runner",

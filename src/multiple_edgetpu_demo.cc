@@ -17,10 +17,11 @@
 //    2) Run: ./multiple_edgetpu_demo
 
 // Enter --help for more detail on flags
-#include <gst/gst.h>
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <fstream>
+#include <gst/gst.h>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -29,11 +30,12 @@
 #include <vector>
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
+#include "absl/strings/numbers.h"
+#include "absl/strings/str_split.h"
 #include "absl/strings/substitute.h"
 #include "absl/synchronization/mutex.h"
 #include "edgetpu.h"
 #include "glog/logging.h"
-#include "utils.h"
 #include "src/cpp/pipeline/pipelined_model_runner.h"
 #include "src/cpp/pipeline/utils.h"
 #include "tensorflow/lite/interpreter.h"
@@ -86,6 +88,38 @@ struct LoopContainer {
   coral::PipelinedModelRunner *runner;
   bool loop_finished;
 };
+
+// Function reads labels from text file and stores in an unordered_map.
+// This function supports the following format:
+//   Each line contains id and description separated by a space.
+//   Example: '0 cat'.
+std::unordered_map<int, std::string> ReadLabelFile(
+    const std::string& file_path) {
+  std::unordered_map<int, std::string> labels;
+  std::unordered_map<int, std::string> empty;
+  std::ifstream file(file_path.c_str());
+  if (file.is_open()) {
+    std::string line;
+    while (getline(file, line)) {
+      absl::RemoveExtraAsciiWhitespace(&line);
+      std::vector<std::string> fields =
+          absl::StrSplit(line, absl::MaxSplits(' ', 1));
+      if (fields.size() == 2) {
+        int label_id;
+        if (!absl::SimpleAtoi(fields[0], &label_id)) {
+          std::cerr << "The label id must be an integer" << std::endl;
+          return empty;
+        }
+        const std::string& label_name = fields[1];
+        labels[label_id] = label_name;
+      }
+    }
+  } else {
+    std::cerr << "Cannot open file: " << file_path << std::endl;
+    std::abort();
+  }
+  return labels;
+}
 
 // Function that returns a vector of Edge TPU contexts
 // Only returns a vector of Edge TPU contexts if enough are available
@@ -160,8 +194,8 @@ void PrintInferenceResults(Container *container, const uint8_t *data,
       "xmlns:ev='http://www.w3.org/2001/xml-events' "
       "xmlns:xlink='http://www.w3.org/1999/xlink'><defs /><text fill='white' "
       "font-size='30' x='11' y='30'>Label: $0</text><text fill='white' "
-      "font-size='30' x='11' y='70'>Score: $1</text><text fill='white' "
-      "font-size='20' x='11' y='100'>Type: $2</text></svg>",
+      "font-size='30' x='11' y='60'>Score: $1</text><text fill='white' "
+      "font-size='30' x='11' y='90'>Type: $2</text></svg>",
       label, max_score, type);
   g_object_set(G_OBJECT(overlaysink), "svg", svg.c_str(), NULL);
   std::cout << "Frame " << frame_count++ << std::endl;
@@ -439,7 +473,7 @@ int main(int argc, char *argv[]) {
   auto *overlaysink = gst_bin_get_by_name(GST_BIN(pipeline), "overlaysink");
   Container runner_container(runner.get(), interpreter.get(),
                              use_multiple_edgetpu, overlaysink, pipeline,
-                             coral::ReadLabelFile(labels_path));
+                             ReadLabelFile(labels_path));
   g_signal_connect(sink, "new-sample", reinterpret_cast<GCallback>(OnNewSample),
                    &runner_container);
 

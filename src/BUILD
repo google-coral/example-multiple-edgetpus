@@ -12,20 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cc_library(
-    name = "utils",
-    srcs = ["utils.cc"],
-    hdrs = ["utils.h"],
-    deps = [
-        "@com_google_absl//absl/strings",
-    ],
-)
-
 cc_binary(
     name = "multiple_edgetpu_demo",
     srcs = ["multiple_edgetpu_demo.cc"],
     deps = [
-        ":utils",
         "@local_gst//:gstreamer",
         "@libedgetpu//:header",
         "@edgetpu//src/cpp/pipeline:pipelined_model_runner",

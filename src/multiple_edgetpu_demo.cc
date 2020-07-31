@@ -17,17 +17,19 @@
 //    2) Run: ./multiple_edgetpu_demo
 
 // Enter --help for more detail on flags
+#include <gst/gst.h>
+
 #include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <fstream>
-#include <gst/gst.h>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/strings/numbers.h"
@@ -61,24 +63,22 @@ ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
 struct Container {
   coral::PipelinedModelRunner *runner;
   tflite::Interpreter *interpreter;
-  absl::Mutex mu_;
-  bool use_multiple_edgetpu GUARDED_BY(mu_);
+  absl::Mutex mutex;
+  bool use_multiple_edgetpu GUARDED_BY(mutex);
   double interpreter_total_time_ms = 0;
   int interpreter_inference_count = 0;
-  GstElement *overlaysink;
   GstElement *pipeline;
   std::unordered_map<int, std::string> labels;
 
   Container(coral::PipelinedModelRunner *runner_,
-            tflite::Interpreter *interpreter_, bool run_type_,
-            GstElement *svgsink, GstElement *pipeline_,
-            std::unordered_map<int, std::string> label_list) {
+            tflite::Interpreter *interpreter_, bool use_multiple_edgetpu_,
+            GstElement *pipeline_,
+            std::unordered_map<int, std::string> labels_) {
     runner = runner_;
     interpreter = interpreter_;
-    use_multiple_edgetpu = run_type_;
-    overlaysink = svgsink;
+    use_multiple_edgetpu = use_multiple_edgetpu_;
     pipeline = pipeline_;
-    labels = label_list;
+    labels = labels_;
   }
 };
 
@@ -93,10 +93,11 @@ struct LoopContainer {
 // This function supports the following format:
 //   Each line contains id and description separated by a space.
 //   Example: '0 cat'.
+// Input: string
+// Output: unordered_map of labels if successful, empty map otherwise
 std::unordered_map<int, std::string> ReadLabelFile(
-    const std::string& file_path) {
+    const std::string &file_path) {
   std::unordered_map<int, std::string> labels;
-  std::unordered_map<int, std::string> empty;
   std::ifstream file(file_path.c_str());
   if (file.is_open()) {
     std::string line;
@@ -108,15 +109,15 @@ std::unordered_map<int, std::string> ReadLabelFile(
         int label_id;
         if (!absl::SimpleAtoi(fields[0], &label_id)) {
           std::cerr << "The label id must be an integer" << std::endl;
-          return empty;
+          return {};
         }
-        const std::string& label_name = fields[1];
+        const std::string &label_name = fields[1];
         labels[label_id] = label_name;
       }
     }
   } else {
     std::cerr << "Cannot open file: " << file_path << std::endl;
-    std::abort();
+    return {};
   }
   return labels;
 }
@@ -169,8 +170,10 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
 
 // Function dequantizes output tensor and prints out inference results
 // Inputs: Container*, uint8_t*, and TfLiteTensor*
-void PrintInferenceResults(Container *container, const uint8_t *data,
-                           const TfLiteTensor *out_tensor) {
+void PrintInferenceResults(const uint8_t *data, const TfLiteTensor *out_tensor,
+                           const std::unordered_map<int, std::string> *labels,
+                           const bool use_multiple_edgetpu,
+                           GstElement *pipeline) {
   std::vector<float> inference_result(out_tensor->bytes);
   static int frame_count = 0;
   // Dequantize output tensor
@@ -183,11 +186,11 @@ void PrintInferenceResults(Container *container, const uint8_t *data,
       std::max_element(inference_result.begin(), inference_result.end());
   const int max_index = std::distance(inference_result.begin(), max_element);
   const float max_score = inference_result[max_index];
-  const std::string label = container->labels[max_index];
-  const std::string type = container->use_multiple_edgetpu
-                               ? "Pipeline Runner"
-                               : "tflite::Interpreter";
-  GstElement *overlaysink = container->overlaysink;
+  const std::string label = labels->at(max_index);
+  const std::string type =
+      use_multiple_edgetpu ? "Pipeline Runner" : "tflite::Interpreter";
+  GstElement *overlaysink =
+      gst_bin_get_by_name(GST_BIN(pipeline), "overlaysink");
   std::string svg = absl::Substitute(
       "<svg baseProfile='full' height='1000' version='1.1' width='1000' "
       "xmlns='http://www.w3.org/2000/svg' "
@@ -222,7 +225,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
     if (gst_buffer_map(buffer, &info, GST_MAP_READ) == TRUE) {
       bool curr_type;
       {
-        absl::ReaderMutexLock(&(container->mu_));
+        absl::ReaderMutexLock(&(container->mutex));
         curr_type = container->use_multiple_edgetpu;
       }
       if (curr_type) {
@@ -249,7 +252,8 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
             CHECK_NOTNULL(container->interpreter->tensor(output_index));
         const uint8_t *out_tensor_data =
             tflite::GetTensorData<uint8_t>(tensor_data);
-        PrintInferenceResults(container, out_tensor_data, tensor_data);
+        PrintInferenceResults(out_tensor_data, tensor_data,
+                              &(container->labels), false, container->pipeline);
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
         container->interpreter_total_time_ms += elapsed_time.count();
@@ -279,11 +283,13 @@ void ResultConsumer(Container *runner_container) {
   while (runner_container->runner->Pop(&output_tensors)) {
     // Retrieve output tensor and output tensor data
     const int output_index = runner_container->interpreter->outputs()[0];
-    const TfLiteTensor *tensor_data =
+    const TfLiteTensor *output_tensor =
         CHECK_NOTNULL(runner_container->interpreter->tensor(output_index));
     coral::PipelineTensor out_tensor = output_tensors[0];
-    const uint8_t *output_tensor = static_cast<uint8_t *>(out_tensor.data.data);
-    PrintInferenceResults(runner_container, output_tensor, tensor_data);
+    const uint8_t *tensor_data = static_cast<uint8_t *>(out_tensor.data.data);
+    PrintInferenceResults(tensor_data, output_tensor,
+                          &(runner_container->labels), true,
+                          runner_container->pipeline);
     std::chrono::duration<double, std::milli> elapsed_time =
         std::chrono::system_clock::now() - start;
     start = std::chrono::system_clock::now();
@@ -304,7 +310,7 @@ void KeyboardWatch(Container *runner_container, LoopContainer *loop_container) {
   while (!loop_container->loop_finished) {
     std::cin >> input;
     if (input == 'n') {
-      absl::WriterMutexLock(&(runner_container->mu_));
+      absl::WriterMutexLock(&(runner_container->mutex));
       if (runner_container->use_multiple_edgetpu) {
         runner_container->use_multiple_edgetpu = false;
         std::cout << "Switching to interpreter" << std::endl;
@@ -326,7 +332,8 @@ void PrintLatencyResults(const Container *container) {
   std::cout << "Total inferences: " << container->interpreter_inference_count
             << std::endl;
   if (container->interpreter_inference_count == 0) {
-    std::cout << "Latency: N/A (no frames were inferenced using Interpreter)" << std::endl;
+    std::cout << "Latency: N/A (no frames were inferenced using Interpreter)"
+              << std::endl;
   } else {
     std::cout << "Latency: "
               << container->interpreter_total_time_ms /
@@ -342,10 +349,12 @@ void PrintLatencyResults(const Container *container) {
     std::cout << "Total inferences: " << pipeline_stats[i].num_inferences
               << std::endl;
     if (pipeline_stats[i].num_inferences == 0) {
-      std::cout << "Latency: N/A (no frames were inferenced using Pipeline)" << std::endl;
+      std::cout << "Latency: N/A (no frames were inferenced using Pipeline)"
+                << std::endl;
     } else {
-      std::cout << "Latency: " << pipeline_time / pipeline_stats[i].num_inferences
-              << " ms/frame" << std::endl;
+      std::cout << "Latency: "
+                << pipeline_time / pipeline_stats[i].num_inferences
+                << " ms/frame" << std::endl;
     }
   }
 }
@@ -470,9 +479,8 @@ int main(int argc, char *argv[]) {
   gst_object_unref(bus);
 
   auto *sink = gst_bin_get_by_name(GST_BIN(pipeline), "appsink");
-  auto *overlaysink = gst_bin_get_by_name(GST_BIN(pipeline), "overlaysink");
   Container runner_container(runner.get(), interpreter.get(),
-                             use_multiple_edgetpu, overlaysink, pipeline,
+                             use_multiple_edgetpu, pipeline,
                              ReadLabelFile(labels_path));
   g_signal_connect(sink, "new-sample", reinterpret_cast<GCallback>(OnNewSample),
                    &runner_container);

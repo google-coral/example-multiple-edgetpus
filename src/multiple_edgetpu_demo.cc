@@ -169,7 +169,7 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
 }
 
 // Function dequantizes output tensor and prints out inference results
-// Inputs: Container*, uint8_t*, and TfLiteTensor*
+// Inputs: uint8_t*, and TfLiteTensor*, unordered_map*, bool, GstElement
 void PrintInferenceResults(const uint8_t *data, const TfLiteTensor *out_tensor,
                            const std::unordered_map<int, std::string> *labels,
                            const bool use_multiple_edgetpu,

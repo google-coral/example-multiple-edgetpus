@@ -170,10 +170,10 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
 
 // Function dequantizes output tensor and prints out inference results
 // Inputs: uint8_t*, and TfLiteTensor*, unordered_map*, bool, GstElement
-void PrintInferenceResults(const uint8_t *data, const TfLiteTensor *out_tensor,
-                           const std::unordered_map<int, std::string> *labels,
-                           const bool use_multiple_edgetpu,
-                           GstElement *pipeline) {
+void PrintInferenceResults(const Container *container, const uint8_t *data) {
+  const int output_index = container->interpreter->outputs()[0];
+  const TfLiteTensor *out_tensor =
+      CHECK_NOTNULL(container->interpreter->tensor(output_index));
   std::vector<float> inference_result(out_tensor->bytes);
   static int frame_count = 0;
   // Dequantize output tensor
@@ -186,11 +186,12 @@ void PrintInferenceResults(const uint8_t *data, const TfLiteTensor *out_tensor,
       std::max_element(inference_result.begin(), inference_result.end());
   const int max_index = std::distance(inference_result.begin(), max_element);
   const float max_score = inference_result[max_index];
-  const std::string label = labels->at(max_index);
-  const std::string type =
-      use_multiple_edgetpu ? "Pipeline Runner" : "tflite::Interpreter";
+  const std::string label = container->labels.at(max_index);
+  const std::string type = container->use_multiple_edgetpu
+                               ? "Pipeline Runner"
+                               : "tflite::Interpreter";
   GstElement *overlaysink =
-      gst_bin_get_by_name(GST_BIN(pipeline), "overlaysink");
+      gst_bin_get_by_name(GST_BIN(container->pipeline), "overlaysink");
   std::string svg = absl::Substitute(
       "<svg baseProfile='full' height='1000' version='1.1' width='1000' "
       "xmlns='http://www.w3.org/2000/svg' "
@@ -252,8 +253,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
             CHECK_NOTNULL(container->interpreter->tensor(output_index));
         const uint8_t *out_tensor_data =
             tflite::GetTensorData<uint8_t>(tensor_data);
-        PrintInferenceResults(out_tensor_data, tensor_data,
-                              &(container->labels), false, container->pipeline);
+        PrintInferenceResults(container, out_tensor_data);
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
         container->interpreter_total_time_ms += elapsed_time.count();
@@ -282,14 +282,9 @@ void ResultConsumer(Container *runner_container) {
   start = std::chrono::system_clock::now();
   while (runner_container->runner->Pop(&output_tensors)) {
     // Retrieve output tensor and output tensor data
-    const int output_index = runner_container->interpreter->outputs()[0];
-    const TfLiteTensor *output_tensor =
-        CHECK_NOTNULL(runner_container->interpreter->tensor(output_index));
     coral::PipelineTensor out_tensor = output_tensors[0];
     const uint8_t *tensor_data = static_cast<uint8_t *>(out_tensor.data.data);
-    PrintInferenceResults(tensor_data, output_tensor,
-                          &(runner_container->labels), true,
-                          runner_container->pipeline);
+    PrintInferenceResults(runner_container, tensor_data);
     std::chrono::duration<double, std::milli> elapsed_time =
         std::chrono::system_clock::now() - start;
     start = std::chrono::system_clock::now();
@@ -456,6 +451,10 @@ int main(int argc, char *argv[]) {
   std::unique_ptr<coral::PipelinedModelRunner> runner(
       new coral::PipelinedModelRunner(all_interpreters));
   CHECK_NOTNULL(runner);
+  std::unordered_map<int, std::string> labels = ReadLabelFile(labels_path);
+  if (labels.size() == 0) {
+    return 1;
+  }
 
   // Create Gstreamer pipeline
   const std::string pipeline_src = absl::Substitute(
@@ -480,8 +479,7 @@ int main(int argc, char *argv[]) {
 
   auto *sink = gst_bin_get_by_name(GST_BIN(pipeline), "appsink");
   Container runner_container(runner.get(), interpreter.get(),
-                             use_multiple_edgetpu, pipeline,
-                             ReadLabelFile(labels_path));
+                             use_multiple_edgetpu, pipeline, labels);
   g_signal_connect(sink, "new-sample", reinterpret_cast<GCallback>(OnNewSample),
                    &runner_container);
 

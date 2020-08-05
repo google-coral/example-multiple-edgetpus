@@ -73,18 +73,15 @@ struct Container {
   int interpreter_inference_count = 0;
   GstElement *pipeline;
   std::unordered_map<int, std::string> labels;
-  bool visualize_inference;
 
   Container(coral::PipelinedModelRunner *runner_,
             tflite::Interpreter *interpreter_, bool use_multiple_edgetpu_,
-            GstElement *pipeline_, std::unordered_map<int, std::string> labels_,
-            bool visualize_inference_) {
+            GstElement *pipeline_, std::unordered_map<int, std::string> labels_) {
     runner = runner_;
     interpreter = interpreter_;
     use_multiple_edgetpu = use_multiple_edgetpu_;
     pipeline = pipeline_;
     labels = labels_;
-    visualize_inference = visualize_inference_;
   }
 };
 
@@ -206,12 +203,12 @@ Result GetInferenceResults(const Container *container, const uint8_t *data) {
 
 // Function dequantizes output tensor and prints out inference results
 // Inputs: Container*, Result, double, string
-void PrintInferenceResults(const Container *container, const Result result,
-                           const double time, const std::string type) {
+void PrintInferenceResults(const Container *container, const Result& result,
+                           const double& latency, const std::string& type) {
   static int frame_count = 0;
-  if (container->visualize_inference) {
-    GstElement *overlaysink =
+  GstElement *overlaysink =
         gst_bin_get_by_name(GST_BIN(container->pipeline), "overlaysink");
+  if (overlaysink) {
     std::string svg = absl::Substitute(
         "<svg baseProfile='full' height='1000' version='1.1' width='1000' "
         "xmlns='http://www.w3.org/2000/svg' "
@@ -220,15 +217,15 @@ void PrintInferenceResults(const Container *container, const Result result,
         "font-size='30' x='11' y='30'>Label: $0</text><text fill='white' "
         "font-size='30' x='11' y='60'>Score: $1</text><text fill='white' "
         "font-size='30' x='11' y='90'>Type: $2</text><text fill='white' "
-        "font-size='30' x='11' y='120'>Time: $3 ms</text></svg>",
-        result.label, result.max_score, type, time);
+        "font-size='30' x='11' y='120'>Latency: $3 ms</text></svg>",
+        result.label, result.max_score, type, latency);
     g_object_set(G_OBJECT(overlaysink), "svg", svg.c_str(), NULL);
   }
   std::cout << "Frame " << frame_count++ << std::endl;
   std::cout << "----------------------------------" << std::endl;
   std::cout << "Label: " << result.label << std::endl;
   std::cout << "Max Score: " << result.max_score << std::endl;
-  std::cout << type << ": " << time << " ms" << std::endl;
+  std::cout << type << ": " << latency << " ms" << std::endl;
   std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
 }
 
@@ -513,7 +510,7 @@ int main(int argc, char *argv[]) {
 
   auto *sink = gst_bin_get_by_name(GST_BIN(pipeline), "appsink");
   Container runner_container(runner.get(), interpreter.get(),
-                             use_multiple_edgetpu, pipeline, labels, visualize);
+                             use_multiple_edgetpu, pipeline, labels);
   g_signal_connect(sink, "new-sample", reinterpret_cast<GCallback>(OnNewSample),
                    &runner_container);
 

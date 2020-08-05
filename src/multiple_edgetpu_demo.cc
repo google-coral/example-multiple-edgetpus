@@ -76,7 +76,8 @@ struct Container {
 
   Container(coral::PipelinedModelRunner *runner_,
             tflite::Interpreter *interpreter_, bool use_multiple_edgetpu_,
-            GstElement *pipeline_, std::unordered_map<int, std::string> labels_) {
+            GstElement *pipeline_,
+            std::unordered_map<int, std::string> labels_) {
     runner = runner_;
     interpreter = interpreter_;
     use_multiple_edgetpu = use_multiple_edgetpu_;
@@ -203,11 +204,11 @@ Result GetInferenceResults(const Container *container, const uint8_t *data) {
 
 // Function dequantizes output tensor and prints out inference results
 // Inputs: Container*, Result, double, string
-void PrintInferenceResults(const Container *container, const Result& result,
-                           const double& latency, const std::string& type) {
+void PrintInferenceResults(const Container *container, const Result &result,
+                           const double &latency, const std::string &type) {
   static int frame_count = 0;
   GstElement *overlaysink =
-        gst_bin_get_by_name(GST_BIN(container->pipeline), "overlaysink");
+      gst_bin_get_by_name(GST_BIN(container->pipeline), "overlaysink");
   if (overlaysink) {
     std::string svg = absl::Substitute(
         "<svg baseProfile='full' height='1000' version='1.1' width='1000' "

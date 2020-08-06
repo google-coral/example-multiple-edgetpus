@@ -59,6 +59,10 @@ ABSL_FLAG(bool, use_multiple_edgetpu, true,
 
 ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
 
+ABSL_FLAG(int, fps, 40, "Framerate of video.");
+
+ABSL_FLAG(bool, visualize, true, "Display video and inference results.");
+
 // Struct for model pipeline runner, tflite::Interpreter, and relevant variables
 struct Container {
   coral::PipelinedModelRunner *runner;
@@ -80,6 +84,13 @@ struct Container {
     pipeline = pipeline_;
     labels = labels_;
   }
+};
+
+// Struct for inference results
+struct Result {
+  int max_index;
+  float max_score;
+  std::string label;
 };
 
 // Struct for model pipeline runner and gloop
@@ -168,44 +179,55 @@ std::unique_ptr<tflite::Interpreter> SetUpIntepreter(
   return interpreter;
 }
 
-// Function dequantizes output tensor and prints out inference results
-// Inputs: uint8_t*, and TfLiteTensor*, unordered_map*, bool, GstElement
-void PrintInferenceResults(const Container *container, const uint8_t *data) {
+// Function dequantizes output tensor and returns one Result
+// Inputs: Container* and uint8_t*
+// Output: Result
+Result GetInferenceResults(const Container *container, const uint8_t *data) {
   const int output_index = container->interpreter->outputs()[0];
   const TfLiteTensor *out_tensor =
       CHECK_NOTNULL(container->interpreter->tensor(output_index));
   std::vector<float> inference_result(out_tensor->bytes);
-  static int frame_count = 0;
   // Dequantize output tensor
   for (size_t i = 0; i < inference_result.size(); i++) {
     inference_result[i] =
         (data[i] - out_tensor->params.zero_point) * out_tensor->params.scale;
   }
-  // Find and print out max score of each frame inference result
+  // Find max score, index, and label of each frame inference result
   const auto max_element =
       std::max_element(inference_result.begin(), inference_result.end());
   const int max_index = std::distance(inference_result.begin(), max_element);
   const float max_score = inference_result[max_index];
   const std::string label = container->labels.at(max_index);
-  const std::string type = container->use_multiple_edgetpu
-                               ? "Pipeline Runner"
-                               : "tflite::Interpreter";
+  Result final_result = {max_index, max_score, label};
+  return final_result;
+}
+
+// Function dequantizes output tensor and prints out inference results
+// Inputs: Container*, Result, double, string
+void PrintInferenceResults(const Container &container, const Result &result,
+                           const double latency, const std::string &type) {
+  static int frame_count = 0;
   GstElement *overlaysink =
-      gst_bin_get_by_name(GST_BIN(container->pipeline), "overlaysink");
-  std::string svg = absl::Substitute(
-      "<svg baseProfile='full' height='1000' version='1.1' width='1000' "
-      "xmlns='http://www.w3.org/2000/svg' "
-      "xmlns:ev='http://www.w3.org/2001/xml-events' "
-      "xmlns:xlink='http://www.w3.org/1999/xlink'><defs /><text fill='white' "
-      "font-size='30' x='11' y='30'>Label: $0</text><text fill='white' "
-      "font-size='30' x='11' y='60'>Score: $1</text><text fill='white' "
-      "font-size='30' x='11' y='90'>Type: $2</text></svg>",
-      label, max_score, type);
-  g_object_set(G_OBJECT(overlaysink), "svg", svg.c_str(), NULL);
+      gst_bin_get_by_name(GST_BIN(container.pipeline), "overlaysink");
+  if (overlaysink) {
+    std::string svg = absl::Substitute(
+        "<svg baseProfile='full' height='1000' version='1.1' width='1000' "
+        "xmlns='http://www.w3.org/2000/svg' "
+        "xmlns:ev='http://www.w3.org/2001/xml-events' "
+        "xmlns:xlink='http://www.w3.org/1999/xlink'><defs /><text fill='white' "
+        "font-size='30' x='11' y='30'>Label: $0</text><text fill='white' "
+        "font-size='30' x='11' y='60'>Score: $1</text><text fill='white' "
+        "font-size='30' x='11' y='90'>Type: $2</text><text fill='white' "
+        "font-size='30' x='11' y='120'>Latency: $3 ms</text></svg>",
+        result.label, result.max_score, type, latency);
+    g_object_set(G_OBJECT(overlaysink), "svg", svg.c_str(), NULL);
+  }
   std::cout << "Frame " << frame_count++ << std::endl;
-  std::cout << "-----------------------------" << std::endl;
-  std::cout << "Label: " << label << std::endl;
-  std::cout << "Max Score: " << max_score << std::endl;
+  std::cout << "----------------------------------" << std::endl;
+  std::cout << "Label: " << result.label << std::endl;
+  std::cout << "Max Score: " << result.max_score << std::endl;
+  std::cout << type << ": " << latency << " ms" << std::endl;
+  std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
 }
 
 // Function called on every new available sample, reads each frame data, and
@@ -253,14 +275,13 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
             CHECK_NOTNULL(container->interpreter->tensor(output_index));
         const uint8_t *out_tensor_data =
             tflite::GetTensorData<uint8_t>(tensor_data);
-        PrintInferenceResults(container, out_tensor_data);
+        Result result = GetInferenceResults(container, out_tensor_data);
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
+        PrintInferenceResults(*container, result, elapsed_time.count(),
+                              "tflite::Interpreter");
         container->interpreter_total_time_ms += elapsed_time.count();
         container->interpreter_inference_count++;
-        std::cout << "Interpreter: " << elapsed_time.count() << " ms"
-                  << std::endl;
-        std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
       }
     } else {
       std::cout << "Error: Couldn't get buffer info" << std::endl;
@@ -284,12 +305,12 @@ void ResultConsumer(Container *runner_container) {
     // Retrieve output tensor and output tensor data
     coral::PipelineTensor out_tensor = output_tensors[0];
     const uint8_t *tensor_data = static_cast<uint8_t *>(out_tensor.data.data);
-    PrintInferenceResults(runner_container, tensor_data);
+    Result result = GetInferenceResults(runner_container, tensor_data);
     std::chrono::duration<double, std::milli> elapsed_time =
         std::chrono::system_clock::now() - start;
     start = std::chrono::system_clock::now();
-    std::cout << "Pipeline: " << elapsed_time.count() << " ms" << std::endl;
-    std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+    PrintInferenceResults(*runner_container, result, elapsed_time.count(),
+                          "Pipeline Runner");
     coral::FreeTensors(output_tensors,
                        runner_container->runner->GetOutputTensorAllocator());
     output_tensors.clear();
@@ -308,10 +329,11 @@ void KeyboardWatch(Container *runner_container, LoopContainer *loop_container) {
       absl::WriterMutexLock(&(runner_container->mutex));
       if (runner_container->use_multiple_edgetpu) {
         runner_container->use_multiple_edgetpu = false;
-        std::cout << "Switching to interpreter" << std::endl;
+        std::cout << "---------- Switching to interpreter ----------"
+                  << std::endl;
       } else {
         runner_container->use_multiple_edgetpu = true;
-        std::cout << "Switching to runner" << std::endl;
+        std::cout << "---------- Switching to runner ----------" << std::endl;
       }
     }
   }
@@ -384,9 +406,6 @@ gboolean OnBusMessage(GstBus *bus, GstMessage *msg, gpointer data) {
       gst_message_parse_warning(msg, &error, nullptr);
       g_printerr("Warning: %s\n", error->message);
       g_error_free(error);
-      container->runner->Push({});
-      container->loop_finished = true;
-      g_main_loop_quit(loop);
       break;
     }
     default:
@@ -407,6 +426,8 @@ int main(int argc, char *argv[]) {
   const bool use_multiple_edgetpu = absl::GetFlag(FLAGS_use_multiple_edgetpu);
   const std::string video_path = absl::GetFlag(FLAGS_video_path);
   const std::string labels_path = absl::GetFlag(FLAGS_labels_path);
+  const int fps = absl::GetFlag(FLAGS_fps);
+  const bool visualize = absl::GetFlag(FLAGS_visualize);
 
   // Get available devices
   auto tpu_contexts = PrepareEdgeTPUContexts(num_segments);
@@ -457,12 +478,23 @@ int main(int argc, char *argv[]) {
   }
 
   // Create Gstreamer pipeline
-  const std::string pipeline_src = absl::Substitute(
-      "filesrc location=$0 ! decodebin ! tee name=t t. ! queue ! glfilterbin "
-      "filter=glbox ! video/x-raw,width=$1,height=$2,format=RGB ! appsink "
-      "name=appsink emit-signals=true max-buffers=1 drop=true t. ! queue "
-      "! glsvgoverlaysink name=overlaysink sync=false",
-      video_path, width, height);
+  std::string pipeline_src;
+  if (visualize) {
+    pipeline_src = absl::Substitute(
+        "filesrc location=$0 ! decodebin ! tee name=t t. ! queue ! glfilterbin "
+        "filter=glbox ! videorate ! "
+        "video/x-raw,framerate=$3/1,width=$1,height=$2,format=RGB ! appsink "
+        "name=appsink emit-signals=true max-buffers=1 drop=true t. ! queue "
+        "! glsvgoverlaysink name=overlaysink sync=false",
+        video_path, width, height, fps);
+  } else {
+    pipeline_src = absl::Substitute(
+        "filesrc location=$0 ! decodebin ! glfilterbin filter=glbox ! "
+        "videorate "
+        "! video/x-raw,framerate=$1/1,width=$2,height=$3,format=RGB ! appsink "
+        "name=appsink emit-signals=true max-buffers=1 drop=true",
+        video_path, fps, width, height);
+  }
 
   // Initialize GStreamer
   gst_init(NULL, NULL);

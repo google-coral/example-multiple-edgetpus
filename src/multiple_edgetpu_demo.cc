@@ -204,11 +204,11 @@ Result GetInferenceResults(const Container *container, const uint8_t *data) {
 
 // Function dequantizes output tensor and prints out inference results
 // Inputs: Container*, Result, double, string
-void PrintInferenceResults(const Container *container, const Result &result,
-                           const double &latency, const std::string &type) {
+void PrintInferenceResults(const Container &container, const Result &result,
+                           const double latency, const std::string &type) {
   static int frame_count = 0;
   GstElement *overlaysink =
-      gst_bin_get_by_name(GST_BIN(container->pipeline), "overlaysink");
+      gst_bin_get_by_name(GST_BIN(container.pipeline), "overlaysink");
   if (overlaysink) {
     std::string svg = absl::Substitute(
         "<svg baseProfile='full' height='1000' version='1.1' width='1000' "
@@ -278,7 +278,7 @@ GstFlowReturn OnNewSample(GstElement *sink, Container *container) {
         Result result = GetInferenceResults(container, out_tensor_data);
         std::chrono::duration<double, std::milli> elapsed_time =
             std::chrono::system_clock::now() - start;
-        PrintInferenceResults(container, result, elapsed_time.count(),
+        PrintInferenceResults(*container, result, elapsed_time.count(),
                               "tflite::Interpreter");
         container->interpreter_total_time_ms += elapsed_time.count();
         container->interpreter_inference_count++;
@@ -309,7 +309,7 @@ void ResultConsumer(Container *runner_container) {
     std::chrono::duration<double, std::milli> elapsed_time =
         std::chrono::system_clock::now() - start;
     start = std::chrono::system_clock::now();
-    PrintInferenceResults(runner_container, result, elapsed_time.count(),
+    PrintInferenceResults(*runner_container, result, elapsed_time.count(),
                           "Pipeline Runner");
     coral::FreeTensors(output_tensors,
                        runner_container->runner->GetOutputTensorAllocator());

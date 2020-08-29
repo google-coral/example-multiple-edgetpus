@@ -18,6 +18,12 @@ RUN apt-get update && apt-get install -y \
   libgstreamer1.0-dev \
   libgstreamer1.0-dev:armhf \
   libgstreamer1.0-dev:arm64 \
+  libgstreamer-plugins-base1.0-dev \
+  libgstreamer-plugins-base1.0-dev:armhf \
+  libgstreamer-plugins-base1.0-dev:arm64 \
+  libgtk-3-dev \
+  libgtk-3-dev:arm64 \
+  libgtk-3-dev:armhf \
   python \
   python3-all \
   python3-six \

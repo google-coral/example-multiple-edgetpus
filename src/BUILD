@@ -16,7 +16,8 @@ cc_binary(
     name = "multiple_edgetpu_demo",
     srcs = ["multiple_edgetpu_demo.cc"],
     deps = [
-        "@local_gst//:gstreamer",
+        "@local//:gstreamer",
+        "@local//:gtk",
         "@libedgetpu//:header",
         "@edgetpu//src/cpp/pipeline:pipelined_model_runner",
         "@edgetpu//src/cpp/pipeline:utils",

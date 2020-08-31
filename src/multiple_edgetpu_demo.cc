@@ -18,6 +18,7 @@
 #include <gst/gl/gl.h>
 #include <gst/gst.h>
 #include <gtk/gtk.h>
+#include <termios.h>
 
 #include <deque>
 #include <fstream>
@@ -75,6 +76,26 @@ const char *kSvgStyles =
     "  .text_fg { fill: white; }\n"
     "  .text_ra { text-anchor: end; }\n"
     " </style>\n";
+
+class AverageCounter {
+ public:
+  AverageCounter(size_t size) : size_(size) {}
+  double PushValue(double value) {
+    data_.push_front(value);
+    while (data_.size() > size_) {
+      data_.pop_back();
+    }
+    value = 0;
+    for (double v : data_) {
+      value += v;
+    }
+    return value / data_.size();
+  }
+
+ private:
+  size_t size_;
+  std::deque<double> data_;
+};
 
 class GstWrapperAllocator : public coral::Allocator {
  public:
@@ -145,8 +166,10 @@ class App {
   gboolean OnBusMessage(GstMessage *msg);
   GstBusSyncReply OnBusMessageSync(GstMessage *msg);
   GstFlowReturn OnNewSample(GstElement *element);
+  void OnStdinReady(GIOChannel *ioc);
   void ConsumeRunner();
-  void HandleOutput(const uint8_t *data, double duration_ms);
+  void FeedInterpreter();
+  void HandleOutput(const uint8_t *data, double inference_ms, double intra_ms);
   void Quit();
 
   std::unordered_map<int, std::string> labels_;
@@ -160,7 +183,11 @@ class App {
   GstElement *glsink_ = nullptr;
   GtkWidget *window_ = nullptr;
   GtkWidget *drawing_area_ = nullptr;
+  GstSample *sample_ = nullptr;
   GstWrapperAllocator allocator_;
+  AverageCounter inference_times_;
+  AverageCounter intra_times_;
+  std::chrono::time_point<std::chrono::steady_clock> last_inference_;
   int input_width_;
   int input_height_;
   size_t input_bytes_;
@@ -168,15 +195,18 @@ class App {
   int32_t output_zero_point_;
   size_t output_bytes_;
   size_t output_frames_ = 0;
+  size_t line_length_ = 0;
   int video_width_ = 0;
   int video_height_ = 0;
   bool use_runner_;
   bool running_;
   bool loop_;
   absl::Mutex mutex_;
+  absl::CondVar cond_;
 };
 
-App::App() {
+App::App()
+    : inference_times_(AverageCounter(100)), intra_times_(AverageCounter(100)) {
   gst_init(NULL, NULL);
   gtk_init(NULL, NULL);
   running_ = false;
@@ -234,11 +264,15 @@ void App::InitializeInference() {
   CHECK_GE(all_tpus.size(), num_segments);
 
   edgetpu_contexts_.resize(num_segments);
+  size_t pci_index = num_segments - 1;
   for (size_t i = 0; i < num_segments; ++i) {
     edgetpu_contexts_[i] =
         CHECK_NOTNULL(edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice(
             all_tpus[i].type, all_tpus[i].path));
     std::cout << "Device " << all_tpus[i].path << " opened" << std::endl;
+    if (all_tpus[i].type == edgetpu::DeviceType::kApexPci) {
+      pci_index = i;
+    }
   }
 
   segment_interpreters_.resize(num_segments);
@@ -258,8 +292,9 @@ void App::InitializeInference() {
   models_.push_back(CHECK_NOTNULL(
       tflite::FlatBufferModel::BuildFromFile(full_model_path.c_str())));
   interpreter_ = InitializeInterpreter(models_.back().get(),
-                                       edgetpu_contexts_.back().get());
-  std::cout << full_model_path << " loaded" << std::endl;
+                                       edgetpu_contexts_[pci_index].get());
+  std::cout << "Full model " << full_model_path << " loaded for "
+            << all_tpus[pci_index].path << std::endl;
 
   auto dims = interpreter_->input_tensor(0)->dims;
   CHECK_EQ(dims->size, 4);
@@ -465,6 +500,40 @@ gboolean App::OnBusMessage(GstMessage *msg) {
   return TRUE;
 }
 
+void App::OnStdinReady(GIOChannel *ioc) {
+  gchar c;
+  GIOStatus ret;
+  gsize read;
+  GError *error = NULL;
+
+  do {
+    switch (ret = g_io_channel_read_chars(ioc, &c, 1, &read, &error)) {
+      case G_IO_STATUS_NORMAL:
+        switch (c) {
+          case ' ':
+            mutex_.Lock();
+            use_runner_ = !use_runner_;
+            mutex_.Unlock();
+            break;
+          case 'q':
+          case 'Q':
+            Quit();
+            break;
+        }
+        break;
+      case G_IO_STATUS_ERROR:
+        std::cout << absl::StrFormat("IO error: %s", error->message)
+                  << std::endl;
+        g_error_free(error);
+        Quit();
+        break;
+      case G_IO_STATUS_EOF:
+      case G_IO_STATUS_AGAIN:
+        break;
+    }
+  } while (read);
+}
+
 GstBusSyncReply App::OnBusMessageSync(GstMessage *msg) {
   if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_NEED_CONTEXT && glsink_) {
     const gchar *ctx_type;
@@ -500,8 +569,9 @@ GstFlowReturn App::OnNewSample(GstElement *element) {
   bool use_runner = use_runner_;
   mutex_.Unlock();
 
+  // Note: don't ever memcpy the input buffer if avoidable. In both paths below
+  // care is taken to avoid this performance bottleneck.
   if (use_runner) {
-    // Note: don't ever memcpy the input buffer if avoidable!
     coral::PipelineTensor tensor;
     tensor.data.data = allocator_.wrap(sample);
     tensor.bytes = input_bytes_;
@@ -512,9 +582,13 @@ GstFlowReturn App::OnNewSample(GstElement *element) {
     start_times_.push_front(std::chrono::steady_clock::now());
     mutex_.Unlock();
   } else {
-    // TODO
-    CHECK(false) << "Not implemented";
-    gst_sample_unref(sample);
+    mutex_.Lock();
+    if (sample_) {
+      gst_sample_unref(sample_);
+    }
+    sample_ = sample;
+    cond_.SignalAll();
+    mutex_.Unlock();
   }
 
   return GST_FLOW_OK;
@@ -522,8 +596,6 @@ GstFlowReturn App::OnNewSample(GstElement *element) {
 
 void App::ConsumeRunner() {
   std::vector<coral::PipelineTensor> output_tensors;
-  std::chrono::time_point<std::chrono::system_clock> start;
-  start = std::chrono::system_clock::now();
   while (runner_->Pop(&output_tensors)) {
     CHECK_EQ(output_tensors.size(), static_cast<size_t>(1));
 
@@ -531,20 +603,98 @@ void App::ConsumeRunner() {
     CHECK(!start_times_.empty());
     auto start_time = start_times_.back();
     start_times_.pop_back();
+    std::chrono::duration<double, std::milli> inference_ms =
+        std::chrono::steady_clock::now() - start_time;
+    std::chrono::duration<double, std::milli> intra_ms =
+        std::chrono::steady_clock::now() - last_inference_;
+    last_inference_ = std::chrono::steady_clock::now();
     mutex_.Unlock();
 
-    std::chrono::duration<double, std::milli> duration_ms =
-        std::chrono::steady_clock::now() - start_time;
     const uint8_t *tensor_data =
         static_cast<uint8_t *>(output_tensors[0].data.data);
-    HandleOutput(tensor_data, duration_ms.count());
+    HandleOutput(tensor_data, inference_ms.count(), intra_ms.count());
 
     coral::FreeTensors(output_tensors, runner_->GetOutputTensorAllocator());
     output_tensors.clear();
   }
 }
 
-void App::HandleOutput(const uint8_t *data, double duration_ms) {
+void App::FeedInterpreter() {
+  bool running;
+  do {
+    GstSample *sample;
+    mutex_.Lock();
+    while (!sample_ && running_) {
+      cond_.Wait(&mutex_);
+    }
+    sample = sample_;
+    sample_ = nullptr;
+    running = running_;
+    mutex_.Unlock();
+
+    if (running && sample) {
+      // TODO: Support passing dma-buf handles without mapping.
+      const auto start_time = std::chrono::steady_clock::now();
+      GstMapInfo info;
+      GstBuffer *buffer = CHECK_NOTNULL(gst_sample_get_buffer(sample));
+      CHECK(gst_buffer_map(buffer, &info, GST_MAP_READ));
+
+      const auto *tensor = CHECK_NOTNULL(interpreter_->input_tensor(0));
+      auto quantization = tensor->quantization;
+      if (quantization.type != kTfLiteNoQuantization) {
+        CHECK_EQ(quantization.type, kTfLiteAffineQuantization);
+        auto *src =
+            reinterpret_cast<TfLiteAffineQuantization *>(quantization.params);
+        auto *copy = CHECK_NOTNULL(static_cast<TfLiteAffineQuantization *>(
+            malloc(sizeof(TfLiteAffineQuantization))));
+        copy->scale = CHECK_NOTNULL(static_cast<TfLiteFloatArray *>(
+            malloc(TfLiteFloatArrayGetSizeInBytes(src->scale->size))));
+        copy->scale->size = src->scale->size;
+        std::memcpy(copy->scale->data, src->scale->data,
+                    TfLiteFloatArrayGetSizeInBytes(src->scale->size));
+        copy->zero_point = TfLiteIntArrayCopy(src->zero_point);
+        copy->quantized_dimension = src->quantized_dimension;
+        quantization.params = copy;
+      }
+
+      const auto shape =
+          absl::Span<const int>(tensor->dims->data, tensor->dims->size);
+      CHECK_EQ(interpreter_->SetTensorParametersReadOnly(
+                   interpreter_->inputs()[0], tensor->type, tensor->name,
+                   std::vector<int>(shape.begin(), shape.end()), quantization,
+                   reinterpret_cast<const char *>(info.data), input_bytes_),
+               kTfLiteOk);
+      CHECK_EQ(tensor->data.raw, reinterpret_cast<char *>(info.data));
+      gst_buffer_unmap(buffer, &info);
+
+      CHECK_EQ(interpreter_->Invoke(), kTfLiteOk);
+      std::chrono::duration<double, std::milli> inference_ms =
+          std::chrono::steady_clock::now() - start_time;
+      mutex_.Lock();
+      std::chrono::duration<double, std::milli> intra_ms =
+          std::chrono::steady_clock::now() - last_inference_;
+      last_inference_ = std::chrono::steady_clock::now();
+      mutex_.Unlock();
+
+      uint8_t *output_data =
+          CHECK_NOTNULL(interpreter_->typed_output_tensor<uint8_t>(0));
+      HandleOutput(output_data, inference_ms.count(), intra_ms.count());
+    }
+    if (sample) {
+      gst_sample_unref(sample);
+    }
+  } while (running);
+
+  mutex_.Lock();
+  if (sample_) {
+    gst_sample_unref(sample_);
+    sample_ = nullptr;
+  }
+  mutex_.Unlock();
+}
+
+void App::HandleOutput(const uint8_t *data, double inference_ms,
+                       double intra_ms) {
   std::vector<float> results(output_bytes_);
   for (size_t i = 0; i < results.size(); i++) {
     results[i] = (data[i] - output_zero_point_) * output_scale_;
@@ -560,6 +710,8 @@ void App::HandleOutput(const uint8_t *data, double duration_ms) {
 
   mutex_.Lock();
   size_t frame_number = ++output_frames_;
+  double avg_inference_ms = inference_times_.PushValue(inference_ms);
+  double avg_intra_ms = intra_times_.PushValue(intra_ms);
   mutex_.Unlock();
 
   if (glsink_) {
@@ -583,11 +735,17 @@ void App::HandleOutput(const uint8_t *data, double duration_ms) {
     std::string styles = absl::Substitute(kSvgStyles, font_size);
     std::string mode = absl::Substitute(
         kSvgText, 1, 1 * row_height,
-        absl::StrFormat("Mode: %s", use_runner_ ? "Pipelined" : "Single TPU"),
+        absl::StrFormat("Mode: %s", use_runner_ ? "Pipelined" : "SingleTPU"),
         "");
     std::string latency =
         absl::Substitute(kSvgText, 1, 2 * row_height,
-                         absl::StrFormat("Latency: %.2f ms", duration_ms), "");
+                         absl::StrFormat("Inference: %.1f (%.1f) ms",
+                                         inference_ms, avg_inference_ms),
+                         "");
+    std::string intra = absl::Substitute(
+        kSvgText, 1, 3 * row_height,
+        absl::StrFormat("Intra frame: %.1f (%.1f) ms", intra_ms, avg_intra_ms),
+        "");
     std::string score =
         absl::Substitute(kSvgText, 1, video_height_ - 5 - row_height,
                          absl::StrFormat("Score: %f", max_score), "");
@@ -598,16 +756,21 @@ void App::HandleOutput(const uint8_t *data, double duration_ms) {
         kSvgText, video_width_ - 1, row_height,
         absl::StrFormat("Frame: %zu", frame_number), " text_ra");
     std::string svg = absl::StrCat(header, styles, mode, label, score, latency,
-                                   counter, kSvgFooter);
+                                   intra, counter, kSvgFooter);
     g_object_set(G_OBJECT(glsink_), "svg", svg.c_str(), NULL);
   } else {
-    // TODO print something useful in headless mode.
-    CHECK(false) << "not implemented";
+    std::string line = absl::StrFormat(
+        "\r%s: frame %zu, inference (ms) %.1f/%.1f, intra (ms) %.1f/%.1f, "
+        "score %.2f label '%s'",
+        use_runner_ ? "Pipelined" : "SingleTPU", frame_number, inference_ms,
+        avg_inference_ms, intra_ms, avg_intra_ms, max_score, max_label);
+    absl::MutexLock lock(&mutex_);
+    line_length_ = std::max(line_length_, line.size());
+    std::cout << std::setw(line_length_) << line << std::flush;
   }
 }
 
 void App::Run() {
-  // TODO: Switch modes with keyboard
   mutex_.Lock();
   use_runner_ = absl::GetFlag(FLAGS_use_multiple_edgetpu);
   loop_ = absl::GetFlag(FLAGS_loop);
@@ -627,16 +790,56 @@ void App::Run() {
                     }),
                     this);
 
-  std::thread consumer(&App::ConsumeRunner, this);
-  gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+  GIOChannel *ioc = nullptr;
+  guint iow = 0;
+  struct termios orig_attrs;
+  if (isatty(STDIN_FILENO)) {
+    struct termios attrs;
+    tcgetattr(STDIN_FILENO, &orig_attrs);
+    tcgetattr(STDIN_FILENO, &attrs);
+    attrs.c_lflag &= ~(ICANON | ECHO);
+    attrs.c_cc[VMIN] = 1;
+    attrs.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &attrs);
+    ioc = g_io_channel_unix_new(STDIN_FILENO);
+    g_io_channel_set_flags(
+        ioc,
+        static_cast<GIOFlags>(g_io_channel_get_flags(ioc) | G_IO_FLAG_NONBLOCK),
+        NULL);
+    iow = g_io_add_watch(
+        ioc, G_IO_IN,
+        reinterpret_cast<GIOFunc>(
+            +[](GIOChannel *ch, GIOCondition cond, App *self) -> gboolean {
+              self->OnStdinReady(ch);
+              return TRUE;
+            }),
+        this);
+    std::cout << std::endl << "Press spacebar to switch modes" << std::endl;
+    std::cout << "Press q to quit" << std::endl;
+  }
 
   mutex_.Lock();
   running_ = true;
+  last_inference_ = std::chrono::steady_clock::now();
   mutex_.Unlock();
+  std::thread consumer(&App::ConsumeRunner, this);
+  std::thread feeder(&App::FeedInterpreter, this);
+  gst_element_set_state(pipeline_, GST_STATE_PLAYING);
   gtk_main();
+
+  if (ioc) {
+    tcsetattr(STDIN_FILENO, TCSANOW, &orig_attrs);
+    g_source_remove(iow);
+    g_io_channel_unref(ioc);
+  }
   gst_element_set_state(pipeline_, GST_STATE_NULL);
+  mutex_.Lock();
+  cond_.SignalAll();
+  mutex_.Unlock();
   runner_->Push({});
   consumer.join();
+  feeder.join();
+  CHECK(!sample_);
   DestroyGtkWindow();
 }
 

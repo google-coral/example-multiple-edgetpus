@@ -47,7 +47,7 @@
 ABSL_FLAG(std::string, model_path, "./test_data/inception_v3_299_quant",
           "Path to the tflite model base.");
 
-ABSL_FLAG(std::string, video_path, "./test_data/video_device.mp4",
+ABSL_FLAG(std::string, video_path, "/usr/share/edgetpudemo/video_device.mp4",
           "Path to the video file.");
 
 ABSL_FLAG(std::string, labels_path, "./test_data/imagenet_labels.txt",
@@ -56,7 +56,7 @@ ABSL_FLAG(std::string, labels_path, "./test_data/imagenet_labels.txt",
 ABSL_FLAG(bool, use_multiple_edgetpu, true,
           "Using PipelinedModelRunner or tflite::Interpreter.");
 
-ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
+ABSL_FLAG(int, num_segments, 2, "Number of segments (Edge TPUs).");
 
 ABSL_FLAG(bool, visualize, true, "Display video and inference results.");
 
@@ -737,15 +737,16 @@ void App::HandleOutput(const uint8_t *data, double inference_ms,
         kSvgText, 1, 1 * row_height,
         absl::StrFormat("Mode: %s", use_runner_ ? "Pipelined" : "SingleTPU"),
         "");
-    std::string latency =
+    std::string fps =
         absl::Substitute(kSvgText, 1, 2 * row_height,
+                         absl::StrFormat("Processing FPS: %.1f (%.1f)",
+                                         1000 / intra_ms, 1000 / avg_intra_ms),
+                         "");
+    std::string latency =
+        absl::Substitute(kSvgText, 1, 3 * row_height,
                          absl::StrFormat("Inference: %.1f (%.1f) ms",
                                          inference_ms, avg_inference_ms),
                          "");
-    std::string intra = absl::Substitute(
-        kSvgText, 1, 3 * row_height,
-        absl::StrFormat("Intra frame: %.1f (%.1f) ms", intra_ms, avg_intra_ms),
-        "");
     std::string score =
         absl::Substitute(kSvgText, 1, video_height_ - 5 - row_height,
                          absl::StrFormat("Score: %f", max_score), "");
@@ -755,15 +756,16 @@ void App::HandleOutput(const uint8_t *data, double inference_ms,
     std::string counter = absl::Substitute(
         kSvgText, video_width_ - 1, row_height,
         absl::StrFormat("Frame: %zu", frame_number), " text_ra");
-    std::string svg = absl::StrCat(header, styles, mode, label, score, latency,
-                                   intra, counter, kSvgFooter);
+    std::string svg = absl::StrCat(header, styles, mode, label, score, fps,
+                                   latency, counter, kSvgFooter);
     g_object_set(G_OBJECT(glsink_), "svg", svg.c_str(), NULL);
   } else {
     std::string line = absl::StrFormat(
-        "\r%s: frame %zu, inference (ms) %.1f/%.1f, intra (ms) %.1f/%.1f, "
+        "\r%s: frame %zu, processing fps %.1f/%.1f, intra (ms) %.1f/%.1f, "
         "score %.2f label '%s'",
         use_runner_ ? "Pipelined" : "SingleTPU", frame_number, inference_ms,
-        avg_inference_ms, intra_ms, avg_intra_ms, max_score, max_label);
+        avg_inference_ms, 1000 / intra_ms, 1000 / avg_intra_ms, max_score,
+        max_label);
     absl::MutexLock lock(&mutex_);
     line_length_ = std::max(line_length_, line.size());
     std::cout << std::setw(line_length_) << line << std::flush;

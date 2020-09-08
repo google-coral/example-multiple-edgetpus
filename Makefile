@@ -14,16 +14,7 @@
 SHELL := /bin/bash
 MAKEFILE_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
 OS := $(shell uname -s)
-
-# Allowed CPU values: k8, aarch64
-ifeq ($(OS),Linux)
-CPU ?= k8
-else
-$(error $(OS) is not supported)
-endif
-ifeq ($(filter $(CPU),k8 aarch64),)
-$(error CPU must be k8 or aarch64)
-endif
+CPU := aarch64
 
 # Allowed COMPILATION_MODE values: opt, dbg
 COMPILATION_MODE ?= dbg
@@ -32,55 +23,35 @@ $(error COMPILATION_MODE must be opt or dbg)
 endif
 
 BAZEL_OUT_DIR :=  $(MAKEFILE_DIR)/bazel-out/$(CPU)-$(COMPILATION_MODE)/bin
-BAZEL_BUILD_FLAGS_Linux := --crosstool_top=@crosstool//:toolchains \
-                           --compiler=gcc \
-                           --linkopt=-l:libedgetpu.so.1
-BAZEL_BUILD_FLAGS_Darwin := --linkopt=-ledgetpu.1
-
-ifeq ($(COMPILATION_MODE), opt)
-BAZEL_BUILD_FLAGS_Linux += --linkopt=-Wl,--strip-all
-endif
-
-ifeq ($(CPU),k8)
-BAZEL_BUILD_FLAGS_Linux += --copt=-includeglibc_compat.h
-else ifeq ($(CPU),aarch64)
-BAZEL_BUILD_FLAGS_Linux += --copt=-ffp-contract=off
-endif
-
-BAZEL_BUILD_FLAGS := --compilation_mode=$(COMPILATION_MODE) \
+BAZEL_BUILD_FLAGS := --crosstool_top=@crosstool//:toolchains \
+                     --compiler=gcc \
+                     --linkopt=-l:libedgetpu.so.1 \
+                     --copt=-ffp-contract=off \
+                     --compilation_mode=$(COMPILATION_MODE) \
                      --copt=-DNPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION \
                      --copt=-std=c++14 \
                      --verbose_failures \
                      --cpu=$(CPU) \
                      --linkopt=-L$(MAKEFILE_DIR)/libedgetpu/direct/$(CPU) \
                      --experimental_repo_remote_exec
-BAZEL_BUILD_FLAGS += $(BAZEL_BUILD_FLAGS_$(OS))
 
-BAZEL_QUERY_FLAGS := --experimental_repo_remote_exec
+ifeq ($(COMPILATION_MODE), opt)
+BAZEL_BUILD_FLAGS += --linkopt=-Wl,--strip-all
+endif
 
-# $(1): pattern, $(2) destination directory
-define copy_out_files
-pushd $(BAZEL_OUT_DIR); \
-for f in `find . -name $(1) -type f`; do \
-	mkdir -p $(2)/`dirname $$f`; \
-	cp -f $(BAZEL_OUT_DIR)/$$f $(2)/$$f; \
-done; \
-popd
-endef
+DEMO_OUT_DIR    := $(MAKEFILE_DIR)/out/$(CPU)/demo
 
-EXAMPLES_OUT_DIR    := $(MAKEFILE_DIR)/out/$(CPU)/examples
-
-examples:
+demo:
 	bazel build $(BAZEL_BUILD_FLAGS) //src:multiple_edgetpu_demo
-	mkdir -p $(EXAMPLES_OUT_DIR)
+	mkdir -p $(DEMO_OUT_DIR)
 	cp -f $(BAZEL_OUT_DIR)/src/multiple_edgetpu_demo \
-	      $(EXAMPLES_OUT_DIR)
+	      $(DEMO_OUT_DIR)
 
 clean:
 	rm -rf $(MAKEFILE_DIR)/bazel-* \
 	       $(MAKEFILE_DIR)/out \
 
 DOCKER_WORKSPACE=$(MAKEFILE_DIR)
-DOCKER_CPUS=k8 aarch64
-DOCKER_TAG_BASE=coral-edgetpu
+DOCKER_CPUS=aarch64
+DOCKER_TAG_BASE=multiple-edgetpu-demo
 include $(MAKEFILE_DIR)/docker/docker.mk

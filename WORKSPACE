@@ -92,4 +92,4 @@ http_archive(
 )
 
 load("@coral_crosstool//:configure.bzl", "cc_crosstool")
-cc_crosstool(name = "crosstool", additional_system_include_directories=["//include"])
+cc_crosstool(name = "crosstool")

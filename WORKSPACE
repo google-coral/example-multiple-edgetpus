@@ -77,9 +77,9 @@ new_local_repository(
 )
 
 new_local_repository(
-    name = "local_gst",
-    path = "/",
-    build_file = "third_party/gst/BUILD",
+    name = "local",
+    path = "/usr",
+    build_file = "third_party/local/BUILD",
 )
 
 http_archive(

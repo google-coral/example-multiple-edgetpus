@@ -49,9 +49,8 @@ endif
 
 BAZEL_BUILD_FLAGS := --compilation_mode=$(COMPILATION_MODE) \
                      --copt=-DNPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION \
+                     --copt=-std=c++14 \
                      --verbose_failures \
-                     --sandbox_debug \
-                     --subcommands \
                      --cpu=$(CPU) \
                      --linkopt=-L$(MAKEFILE_DIR)/libedgetpu/direct/$(CPU) \
                      --experimental_repo_remote_exec

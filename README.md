@@ -1,39 +1,43 @@
-# Multiple Edge TPU Demo Example(C / C++)
+# Multiple Edge TPU Demo
 
-This example shows how build and run a program that will run inferences on a
-video with multiple Edge TPUs.
+This demo shows how to use
+[model pipelining](https://coral.ai/docs/edgetpu/pipeline/) (with multiple Edge
+TPUs) to process a video with a larger model.
 
 ## Requirements
 
-This repository contains code that will run with Coral devices:
+This demo assumes the following setup
 
-* [Dev Board](https://coral.ai/products/dev-board/)
-* [USB Accelerator (2)](https://coral.ai/products/accelerator/)
+*   [Dev Board](https://coral.ai/products/dev-board/)
+*   [1 or 2 USB Accelerators](https://coral.ai/products/accelerator/)
+*   USB Accelerators should be connected to Dev Board with a powered USB hub to
+    guarantee sufficient power supply.
 
-You will also need to install [GStreamer](https://gstreamer.freedesktop.org/documentation/installing/) 
-and [Bazel](https://docs.bazel.build/versions/master/install.html) to run the projects.
+## Cross Compile
 
-## Native C/C++ Code
+You will need to install docker on your computer first to compile the project.
 
-All of the C/C++ code are in `src` folder.
+```
+make DOCKER_TARGETS=demo docker-build
+```
 
-## Docker Set-Up
-
-You will need to install docker on your computer first to run the project with
-docker or docker-shell.
-
-To run and compile the project inside docker, launch docker-shell by entering
-`make DOCKER_IMAGE=debian:buster DOCKER_CPUS="aarch64" docker-shell`. Once the
-docker-shell has been setup, enter `make CPU=aarch64 examples` to compile and build
-the project. Open a new terminal when the project is finished building, the binary
-should be in `out/aarch64/examples/` directory. In order to run the project, you
-must be connected to a Coral Dev Board and copy the binary over. All necessary
-tflite model files should also be copied to the Coral Dev Board.
+The binary should be in `out/aarch64/demo` directory.
 
 ## Running the Project
 
-To run the project, you can enter `./multiple_edgetpu_demo -help` to see the flag
-options and default values. To specify any parameters, specify the flag and new
-input. If no new parameters are specified, the default values will be used to run
-the project. Please note that the default program requires 1 Coral Dev Board and
-2 Edge TPUs to run. 
+To run the project, copy `test_data` and generated binary
+`multiple_edgetpu_demo` to Dev Board. Run:
+
+```
+./multiple_edgetpu_demo --num_segments 3 \
+  --video_path <your video>
+```
+
+You can enter `./multiple_edgetpu_demo --help` to see the flag options and
+default values.
+
+## Performance expectation
+
+To analyze a 720p 60 FPS video with `inception_v3` model, the system can process
+about 20 FPS with 1 Edge TPU; and 50+ FPS with 3 Edge TPUs using model
+pipelining.

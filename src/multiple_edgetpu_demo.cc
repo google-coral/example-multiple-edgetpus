@@ -55,7 +55,7 @@ ABSL_FLAG(std::string, labels_path, "./test_data/imagenet_labels.txt",
 ABSL_FLAG(bool, use_multiple_edgetpu, true,
           "Using PipelinedModelRunner or tflite::Interpreter.");
 
-ABSL_FLAG(int, num_segments, 3, "Number of segments (Edge TPUs).");
+ABSL_FLAG(int, num_segments, 2, "Number of segments (Edge TPUs).");
 
 ABSL_FLAG(bool, visualize, true, "Display video and inference results.");
 

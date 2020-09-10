@@ -41,3 +41,8 @@ default values.
 To analyze a 720p 60 FPS video with `inception_v3` model, the system can process
 about 20 FPS with 1 Edge TPU; and 50+ FPS with 3 Edge TPUs using model
 pipelining.
+
+## License
+
+[Apache License 2.0](LICENSE)
+

@@ -13,6 +13,9 @@ This demo assumes the following setup
 *   USB Accelerators should be connected to Dev Board with a powered USB hub to
     guarantee sufficient power supply
 
+This demo is tested on [Mendel Eagle](https://coral.ai/software/) with
+[Eel2 release](https://github.com/google-coral/edgetpu/commit/c48c88871fd3d2e10d298126cd6a08b88d22496c)
+
 ## Compiling the demo
 
 You will need to install docker on your computer first to compile the project.

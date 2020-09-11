@@ -63,10 +63,10 @@ tf_workspace(tf_repo_name = "org_tensorflow")
 
 http_archive(
     name = "edgetpu",
-    sha256 = "3675945e7e0ce7b3f182883f321fa39f64a475a3e50a1a922fd6ef8a7563d6bc",
-    strip_prefix = "edgetpu-285cacf0a879e3e343abd38c33eb622ae253529c",
+    sha256 = "29a8cd7e6d3fc90cbe8a8025b51c3fed5bd56c79c6a9b09b5833e349f66a829b",
+    strip_prefix = "edgetpu-c48c88871fd3d2e10d298126cd6a08b88d22496c",
     urls = [
-        "https://github.com/google-coral/edgetpu/archive/285cacf0a879e3e343abd38c33eb622ae253529c.tar.gz",
+        "https://github.com/google-coral/edgetpu/archive/c48c88871fd3d2e10d298126cd6a08b88d22496c.tar.gz",
     ]
 )
 

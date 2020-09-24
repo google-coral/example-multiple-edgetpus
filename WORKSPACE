@@ -14,6 +14,7 @@
 workspace(name = "multiple_edgetpu_demo")
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 
 TENSORFLOW_COMMIT = "d855adfc5a0195788bf5f92c3c7352e638aa1109"
 TENSORFLOW_SHA256 = "b8a691dbea2bb028fa8f7ce407b70ad236dae0a8705c8010dc7bad8af7e93bac"
@@ -61,6 +62,25 @@ http_archive(
 load("@org_tensorflow//tensorflow:workspace.bzl", "tf_workspace")
 tf_workspace(tf_repo_name = "org_tensorflow")
 
+git_repository(
+    name = "libedgetpu",
+    commit = "f8cac1044e3ca32b6a9c8712ac6d063e58f19fe1",
+    remote = "https://github.com/google-coral/libedgetpu",
+)
+
+new_local_repository(
+    name = "libusb",
+    path = "/usr/include/",
+    build_file_content = """
+cc_library(
+  name = "headers",
+  includes = ["."],
+  hdrs = ["libusb-1.0/libusb.h"],
+  visibility = ["//visibility:public"],
+)
+"""
+)
+
 http_archive(
     name = "edgetpu",
     sha256 = "29a8cd7e6d3fc90cbe8a8025b51c3fed5bd56c79c6a9b09b5833e349f66a829b",
@@ -68,12 +88,6 @@ http_archive(
     urls = [
         "https://github.com/google-coral/edgetpu/archive/c48c88871fd3d2e10d298126cd6a08b88d22496c.tar.gz",
     ]
-)
-
-new_local_repository(
-    name = "libedgetpu",
-    path = "libedgetpu",
-    build_file = "libedgetpu/BUILD"
 )
 
 new_local_repository(
@@ -92,4 +106,4 @@ http_archive(
 )
 
 load("@coral_crosstool//:configure.bzl", "cc_crosstool")
-cc_crosstool(name = "crosstool")
+cc_crosstool(name = "crosstool", additional_system_include_directories=["//docker/include"])

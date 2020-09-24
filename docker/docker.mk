@@ -1,7 +1,7 @@
 DOCKER_MK_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
 
 # Docker
-DOCKER_CPUS ?= aarch64
+DOCKER_CPUS ?= k8 armv7a armv6 aarch64
 DOCKER_TARGETS ?=
 DOCKER_IMAGE ?= debian:buster
 DOCKER_TAG_BASE ?= "bazel-cross"
@@ -15,7 +15,7 @@ endif
 WORKSPACE := /workspace
 MAKE_COMMAND := \
 for cpu in $(DOCKER_CPUS); do \
-    make CPU=\$${cpu} -C /workspace $(DOCKER_TARGETS) || exit 1; \
+    make CPU=\$${cpu} COMPILATION_MODE=$(COMPILATION_MODE) -C /workspace $(DOCKER_TARGETS) || exit 1; \
 done
 
 define run_command

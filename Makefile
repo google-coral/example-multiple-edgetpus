@@ -14,7 +14,16 @@
 SHELL := /bin/bash
 MAKEFILE_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
 OS := $(shell uname -s)
-CPU := aarch64
+
+# Allowed CPU values: k8, armv7a, aarch64
+ifeq ($(OS),Linux)
+CPU ?= k8
+else
+$(error $(OS) is not supported)
+endif
+ifeq ($(filter $(CPU),k8 armv7a aarch64),)
+$(error CPU must be k8, armv7a, aarch64)
+endif
 
 # Allowed COMPILATION_MODE values: opt, dbg
 COMPILATION_MODE ?= opt
@@ -25,18 +34,27 @@ endif
 BAZEL_OUT_DIR :=  $(MAKEFILE_DIR)/bazel-out/$(CPU)-$(COMPILATION_MODE)/bin
 BAZEL_BUILD_FLAGS := --crosstool_top=@crosstool//:toolchains \
                      --compiler=gcc \
-                     --linkopt=-l:libedgetpu.so.1 \
-                     --copt=-ffp-contract=off \
                      --compilation_mode=$(COMPILATION_MODE) \
                      --copt=-DNPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION \
                      --copt=-std=c++14 \
                      --verbose_failures \
                      --cpu=$(CPU) \
-                     --linkopt=-L$(MAKEFILE_DIR)/libedgetpu/direct/$(CPU) \
                      --experimental_repo_remote_exec
 
 ifeq ($(COMPILATION_MODE), opt)
 BAZEL_BUILD_FLAGS += --linkopt=-Wl,--strip-all
+else ifeq ($(COMPILATION_MODE), dbg)
+# for now, disable arm_neon in dbg.
+# see: https://github.com/tensorflow/tensorflow/issues/33360
+BAZEL_BUILD_FLAGS += --cxxopt -DTF_LITE_DISABLE_X86_NEON
+endif
+
+ifeq ($(CPU),k8)
+BAZEL_BUILD_FLAGS += --copt=-includeglibc_compat.h
+else ifeq ($(CPU),aarch64)
+BAZEL_BUILD_FLAGS += --copt=-ffp-contract=off
+else ifeq ($(CPU),armv7a)
+BAZEL_BUILD_FLAGS += --copt=-ffp-contract=off
 endif
 
 DEMO_OUT_DIR    := $(MAKEFILE_DIR)/out/$(CPU)/demo
@@ -52,6 +70,6 @@ clean:
 	       $(MAKEFILE_DIR)/out \
 
 DOCKER_WORKSPACE=$(MAKEFILE_DIR)
-DOCKER_CPUS=aarch64
+DOCKER_CPUS=aarch64 k8
 DOCKER_TAG_BASE=multiple-edgetpu-demo
 include $(MAKEFILE_DIR)/docker/docker.mk

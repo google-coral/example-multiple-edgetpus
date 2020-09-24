@@ -12,17 +12,55 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+package(default_visibility = ["//visibility:public"])
+
+config_setting(
+    name = "aarch64",
+    values = {"cpu": "aarch64"},
+)
+
+config_setting(
+    name = "armv7a",
+    values = {"cpu": "armv7a"},
+)
+
+config_setting(
+    name = "k8",
+    values = {"cpu": "k8"},
+)
+
+UNSUPPORTED_CPU_ERROR = "Unsupported target CPU"
+
 cc_library(
     name = "gstreamer",
-    srcs = glob(
-        [
-            "lib/aarch64-linux-gnu/libgstbase-1.0.so",
-            "lib/aarch64-linux-gnu/libgstreamer-1.0.so",
-            "lib/aarch64-linux-gnu/libgstallocators-1.0.so",
-            "lib/aarch64-linux-gnu/libgstapp-1.0.so",
-            "lib/aarch64-linux-gnu/libgstvideo-1.0.so",
-            "lib/aarch64-linux-gnu/libgstgl-1.0.so",
-        ],
+    srcs = select(
+        {
+            ":aarch64": glob([
+                        "lib/aarch64-linux-gnu/libgstbase-1.0.so",
+                        "lib/aarch64-linux-gnu/libgstreamer-1.0.so",
+                        "lib/aarch64-linux-gnu/libgstallocators-1.0.so",
+                        "lib/aarch64-linux-gnu/libgstapp-1.0.so",
+                        "lib/aarch64-linux-gnu/libgstvideo-1.0.so",
+                        "lib/aarch64-linux-gnu/libgstgl-1.0.so",
+                        ]),
+            ":armv7a": glob([
+                        "lib/arm-linux-gnueabihf/libgstbase-1.0.so",
+                        "lib/arm-linux-gnueabihf/libgstreamer-1.0.so",
+                        "lib/arm-linux-gnueabihf/libgstallocators-1.0.so",
+                        "lib/arm-linux-gnueabihf/libgstapp-1.0.so",
+                        "lib/arm-linux-gnueabihf/libgstvideo-1.0.so",
+                        "lib/arm-linux-gnueabihf/libgstgl-1.0.so",
+                        ]),
+            ":k8": glob([
+                        "lib/x86_64-linux-gnu/libgstbase-1.0.so",
+                        "lib/x86_64-linux-gnu/libgstreamer-1.0.so",
+                        "lib/x86_64-linux-gnu/libgstallocators-1.0.so",
+                        "lib/x86_64-linux-gnu/libgstapp-1.0.so",
+                        "lib/x86_64-linux-gnu/libgstvideo-1.0.so",
+                        "lib/x86_64-linux-gnu/libgstgl-1.0.so",
+                        ]),
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
     ),
     hdrs = glob(
         [
@@ -30,24 +68,76 @@ cc_library(
             "include/gstreamer-1.0/gst/app/*.h",
             "include/gstreamer-1.0/gst/base/*.h",
             "include/gstreamer-1.0/gst/gl/*.h",
-            "lib/aarch64-linux-gnu/gstreamer-1.0/include/gst/gl/*.h",
             "include/gstreamer-1.0/gst/video/*.h",
-        ]),
-    includes = ["include/gstreamer-1.0/", "lib/aarch64-linux-gnu/gstreamer-1.0/include"],
+        ],
+    ) + select(
+        {
+            ":aarch64": glob(["lib/aarch64-linux-gnu/gstreamer-1.0/include/gst/gl/*.h"]),
+            ":armv7a": glob(["lib/arm-linux-gnueabihf/gstreamer-1.0/include/gst/gl/*.h"]),
+            ":k8": glob(["lib/x86_64-linux-gnu/gstreamer-1.0/include/gst/gl/*.h"]),
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
+    ),
+    includes = ["include/gstreamer-1.0"] + select(
+        {
+            ":aarch64": ["lib/aarch64-linux-gnu/gstreamer-1.0/include"],
+            ":armv7a": ["lib/arm-linux-gnueabihf/gstreamer-1.0/include"],
+            ":k8": ["lib/x86_64-linux-gnu/gstreamer-1.0/include"],
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
+    ),
     linkstatic = 0,
-    visibility = ["//visibility:public"],
     deps = [
         ":glib",
     ],
 )
 
 cc_library(
-    name = "glib",
-    srcs = glob(
+    name = "gstallocators",
+    srcs = select(
+        {
+            ":aarch64": glob(["lib/aarch64-linux-gnu/libgstallocators-1.0.so*"]),
+            ":armv7a": glob(["lib/arm-linux-gnueabihf/libgstallocators-1.0.so*"]),
+            ":k8": glob(["lib/x86_64-linux-gnu/libgstallocators-1.0.so*"]),
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
+    ),
+    hdrs = glob(
         [
-            "lib/aarch64-linux-gnu/libglib-2.0.so",
-            "lib/aarch64-linux-gnu/libgobject-2.0.so",
+            "include/gstreamer-1.0/gst/allocators/*.h",
         ],
+    ),
+    includes = ["include/gstreamer-1.0"],
+    linkstatic = 0,
+    deps = [
+        ":gstreamer",
+    ],
+)
+
+cc_library(
+    name = "glib",
+    srcs = select(
+        {
+            ":aarch64": glob([
+                "lib/aarch64-linux-gnu/libgobject-2.0.so.0*",
+                "lib/aarch64-linux-gnu/libgobject-2.0.so.0*",
+                "lib/aarch64-linux-gnu/libglib-2.0.so.0*",
+                "lib/aarch64-linux-gnu/libglib-2.0.so.0*",
+            ]),
+            ":armv7a": glob([
+                "lib/arm-linux-gnueabihf/libgobject-2.0.so.0*",
+                "lib/arm-linux-gnueabihf/libgobject-2.0.so.0*",
+                "lib/arm-linux-gnueabihf/libglib-2.0.so.0*",
+                "lib/arm-linux-gnueabihf/libglib-2.0.so.0*",
+            ]),
+            ":k8": glob([
+                "lib/x86_64-linux-gnu/libgobject-2.0.so.0*",
+                "lib/x86_64-linux-gnu/libgobject-2.0.so.0*",
+                "lib/x86_64-linux-gnu/libglib-2.0.so.0*",
+                "lib/x86_64-linux-gnu/libglib-2.0.so.0*",
+            ]),
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
     ),
     hdrs = glob(
         [
@@ -55,21 +145,45 @@ cc_library(
             "include/glib-2.0/*/*.h",
             "include/glib-2.0/glib/deprecated/*.h",
             "include/glib-2.0/gobject/*.h",
-            "lib/aarch64-linux-gnu/glib-2.0/include/*",
-        ]),
-    includes = ["include/glib-2.0", "lib/aarch64-linux-gnu/glib-2.0/include"],
+        ],
+    ) + select(
+        {
+            ":aarch64": glob(["lib/aarch64-linux-gnu/glib-2.0/include/*.h"]),
+            ":armv7a": glob(["lib/arm-linux-gnueabihf/glib-2.0/include/*.h"]),
+            ":k8": glob(["lib/x86_64-linux-gnu/glib-2.0/include/*.h"]),
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
+    ),
+    includes = ["include/glib-2.0"] + select(
+        {
+            ":aarch64": ["lib/aarch64-linux-gnu/glib-2.0/include"],
+            ":armv7a": ["lib/arm-linux-gnueabihf/glib-2.0/include"],
+            ":k8": ["lib/x86_64-linux-gnu/glib-2.0/include"],
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
+    ),
     linkstatic = 0,
-    visibility = ["//visibility:public"],
 )
 
 # sudo apt-get install libgtk-3-dev
 cc_library(
     name = "gtk",
-    srcs = glob(
-        [
-            "lib/aarch64-linux-gnu/libgdk-3.so",
-            "lib/aarch64-linux-gnu/libgtk-3.so",
-        ],
+    srcs = select(
+        {
+            ":aarch64": glob([
+                    "lib/aarch64-linux-gnu/libgdk-3.so",
+                    "lib/aarch64-linux-gnu/libgtk-3.so",
+            ]),
+            ":armv7a": glob([
+                    "lib/arm-linux-gnu/libgdk-3.so",
+                    "lib/arm-linux-gnu/libgtk-3.so",
+            ]),
+            ":k8": glob([
+                    "lib/x86_64-linux-gnu/libgdk-3.so",
+                    "lib/x86_64-linux-gnu/libgtk-3.so",
+            ]),
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
     ),
     hdrs = glob(
         [
@@ -92,10 +206,13 @@ cc_library(
 
 cc_library(
     name = "pango",
-    srcs = glob(
-        [
-            "lib/aarch64-linux-gnu/libpango-1.0.so",
-        ],
+    srcs = select(
+        {
+            ":aarch64": glob(["lib/aarch64-linux-gnu/libpango-1.0.so"]),
+            ":armv7a": glob(["lib/arm-linux-gnu/libpango-1.0.so"]),
+            ":k8": glob(["lib/x86_64-linux-gnu/libpango-1.0.so"]),
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
     ),
     hdrs = glob(
         [
@@ -108,10 +225,12 @@ cc_library(
 
 cc_library(
     name = "cairo",
-    srcs = glob(
-        [
-            "lib/aarch64-linux-gnu/libcairo.so",
-        ],
+    srcs = select(
+        {
+            ":aarch64": glob(["lib/aarch64-linux-gnu/libcairo.so"]),
+            ":armv7a": glob(["lib/arm-linux-gnu/libcairo.so"]),
+            ":k8": glob(["lib/x86_64-linux-gnu/libcairo.so"]),
+        },
     ),
     hdrs = glob(
         [
@@ -156,10 +275,13 @@ cc_library(
 
 cc_library(
     name = "gbm",
-    srcs = glob(
-        [
-            "lib/aarch64-linux-gnu/libgbm.so",
-        ],
+    srcs = select(
+        {
+            ":aarch64": glob(["lib/aarch64-linux-gnu/libgbm.so"]),
+            ":armv7a": glob(["lib/arm-linux-gnu/libgbm.so"]),
+            ":k8": glob(["lib/x86_64-linux-gnu/libgbm.so"]),
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
     ),
     hdrs = glob(
         [
@@ -172,10 +294,13 @@ cc_library(
 
 cc_library(
     name = "drm",
-    srcs = glob(
-        [
-            "lib/aarch64-linux-gnu/libdrm.so",
-        ],
+    srcs = select(
+        {
+            ":aarch64": glob(["lib/aarch64-linux-gnu/libdrm.so"]),
+            ":armv7a": glob(["lib/arm-linux-gnu/libdrm.so"]),
+            ":k8": glob(["lib/x86_64-linux-gnu/libdrm.so"]),
+        },
+        no_match_error = UNSUPPORTED_CPU_ERROR,
     ),
     hdrs = glob(
         [

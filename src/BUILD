@@ -12,13 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+cc_library(
+    name = "libedgetpu",
+    deps = [
+      "@libedgetpu//driver/beagle:beagle_all_driver_provider",
+      "@libedgetpu//tflite/public:edgetpu",
+      "@libedgetpu//tflite/public:edgetpu_c",
+      "@libedgetpu//tflite:custom_op_direct",
+    ],
+)
+
 cc_binary(
     name = "multiple_edgetpu_demo",
     srcs = ["multiple_edgetpu_demo.cc"],
     deps = [
+		":libedgetpu",
         "@local//:gstreamer",
         "@local//:gtk",
-        "@libedgetpu//:header",
         "@edgetpu//src/cpp/pipeline:pipelined_model_runner",
         "@edgetpu//src/cpp/pipeline:utils",
         "@org_tensorflow//tensorflow/lite:framework",

@@ -35,7 +35,6 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/substitute.h"
 #include "absl/synchronization/mutex.h"
-#include "edgetpu.h"
 #include "glog/logging.h"
 #include "src/cpp/pipeline/pipelined_model_runner.h"
 #include "src/cpp/pipeline/utils.h"
@@ -43,6 +42,7 @@
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
+#include "tflite/public/edgetpu.h"
 
 ABSL_FLAG(std::string, model_path, "./test_data/inception_v3_299_quant",
           "Path to the tflite model base.");

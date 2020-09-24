@@ -15,6 +15,9 @@ RUN apt-get update && apt-get install -y \
   libusb-1.0-0-dev \
   libusb-1.0-0-dev:arm64 \
   libusb-1.0-0-dev:armhf \
+  libglib2.0-dev \
+  libglib2.0-dev:armhf \
+  libglib2.0-dev:arm64 \
   libgstreamer1.0-dev \
   libgstreamer1.0-dev:armhf \
   libgstreamer1.0-dev:arm64 \

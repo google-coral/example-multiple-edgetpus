@@ -15,9 +15,11 @@
 #include <gdk/gdk.h>
 #include <gdk/gdkwayland.h>
 #include <glib-unix.h>
+#include <gst/allocators/gstdmabuf.h>
 #include <gst/gl/gl.h>
 #include <gst/gst.h>
 #include <gtk/gtk.h>
+#include <sys/mman.h>
 #include <termios.h>
 
 #include <deque>
@@ -35,9 +37,9 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/substitute.h"
 #include "absl/synchronization/mutex.h"
+#include "coral/pipeline/pipelined_model_runner.h"
+#include "coral/pipeline/utils.h"
 #include "glog/logging.h"
-#include "src/cpp/pipeline/pipelined_model_runner.h"
-#include "src/cpp/pipeline/utils.h"
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/register.h"
@@ -119,56 +121,93 @@ class AverageCounter {
   std::deque<double> data_;
 };
 
-class GstWrapperAllocator : public coral::Allocator {
+class DmaBuffer : public coral::Buffer {
  public:
-  GstWrapperAllocator() = default;
+  DmaBuffer(GstSample *sample, size_t requested_bytes)
+      : sample_(CHECK_NOTNULL(sample)), requested_bytes_(requested_bytes) {}
 
-  virtual ~GstWrapperAllocator() {
-    CHECK(map_infos_.empty());
-    CHECK(samples_.empty());
-  }
-
-  virtual void *alloc(size_t size) {
-    // This is not a real allocator, can't allocate new memory.
-    CHECK(false) << "Unsupported operation";
-    return nullptr;
-  }
-
-  virtual void free(void *p, size_t size) {
-    absl::MutexLock lock(&mutex_);
-
-    auto info_iter = map_infos_.find(p);
-    auto sample_iter = samples_.find(p);
-    CHECK(info_iter != map_infos_.end());
-    CHECK(sample_iter != samples_.end());
-    map_infos_.erase(info_iter);
-    samples_.erase(sample_iter);
-
-    GstSample *sample = sample_iter->second;
-    GstMapInfo info = info_iter->second;
-    gst_buffer_unmap(CHECK_NOTNULL(gst_sample_get_buffer(sample)), &info);
-    gst_sample_unref(sample);
-  }
-
-  void *wrap(GstSample *sample) {
-    absl::MutexLock lock(&mutex_);
-
-    // TODO: This is using an experimental and unstable API that
-    // will change in the future. In particular there will be no
-    // need to map buffer for CPU access here.
+  // For cases where we can't use DMABuf (like most x64 systems), return the
+  // sample. This allows the pipeline runner to see there is no file descriptor
+  // and instead rely on inefficient CPU mapping. Ideally this can optimized in
+  // the future.
+  void *ptr() override {
     GstMapInfo info;
-    GstBuffer *buffer = CHECK_NOTNULL(gst_sample_get_buffer(sample));
+    GstBuffer *buffer = CHECK_NOTNULL(gst_sample_get_buffer(sample_));
     CHECK(gst_buffer_map(buffer, &info, GST_MAP_READ));
-    void *data = reinterpret_cast<void *>(info.data);
-    map_infos_[data] = info;
-    samples_[data] = sample;
-    return data;
+    data_ = reinterpret_cast<void *>(info.data);
+    return data_;
+  }
+
+  void *MapToHost() override {
+    if (!handle_) {
+      handle_ = mmap(nullptr, requested_bytes_, PROT_READ, MAP_PRIVATE, fd(),
+                     /*offset=*/0);
+      if (handle_ == MAP_FAILED) {
+        handle_ = nullptr;
+      }
+    }
+    return handle_;
+  }
+
+  bool UnmapFromHost() override {
+    if (munmap(handle_, requested_bytes_) != 0) {
+      return false;
+    }
+    return true;
+  }
+
+  int fd() {
+    if (fd_ == -1) {
+      GstBuffer *buf = CHECK_NOTNULL(gst_sample_get_buffer(sample_));
+      GstMemory *mem = gst_buffer_peek_memory(buf, 0);
+      if (gst_is_dmabuf_memory(mem)) {
+        fd_ = gst_dmabuf_memory_get_fd(mem);
+      }
+    }
+    return fd_;
   }
 
  private:
-  absl::Mutex mutex_;
-  std::unordered_map<void *, GstMapInfo> map_infos_;
-  std::unordered_map<void *, GstSample *> samples_;
+  friend class DmaAllocator;
+
+  GstSample *sample_ = nullptr;
+  size_t requested_bytes_ = 0;
+
+  // DMA Buffer variables
+  int fd_ = -1;
+  void *handle_ = nullptr;
+
+  // Legacy CPU variables
+  void *data_ = nullptr;
+};
+
+class DmaAllocator : public coral::Allocator {
+ public:
+  DmaAllocator() = default;
+  DmaAllocator(GstElement *sink) : sink_(CHECK_NOTNULL(sink)) {}
+
+  coral::Buffer *Alloc(size_t size_bytes) override {
+    GstSample *sample;
+    g_signal_emit_by_name(sink_, "pull-sample", &sample);
+    return new DmaBuffer(sample, size_bytes);
+  }
+
+  void Free(coral::Buffer *buffer) override {
+    auto *sample = static_cast<DmaBuffer *>(buffer)->sample_;
+    if (sample) {
+      gst_sample_unref(sample);
+    }
+
+    delete buffer;
+  }
+
+  void UpdateAppSink(GstElement *sink) {
+    CHECK_NOTNULL(sink);
+    sink_ = sink;
+  }
+
+ private:
+  GstElement *sink_ = nullptr;
 };
 
 class App {
@@ -206,7 +245,7 @@ class App {
   GtkWidget *window_ = nullptr;
   GtkWidget *drawing_area_ = nullptr;
   GstSample *sample_ = nullptr;
-  GstWrapperAllocator allocator_;
+  DmaAllocator allocator_;
   AverageCounter inference_times_;
   AverageCounter intra_times_;
   std::chrono::time_point<std::chrono::steady_clock> last_inference_;
@@ -413,6 +452,7 @@ void App::InitializeGstreamer() {
 
   GstElement *appsink = gst_bin_get_by_name(GST_BIN(pipeline_), "appsink");
   CHECK_NOTNULL(appsink);
+  allocator_.UpdateAppSink(appsink);
   g_signal_connect(appsink, "new-sample",
                    reinterpret_cast<GCallback>(
                        +[](GstElement *element, App *self) -> GstFlowReturn {
@@ -600,10 +640,6 @@ GstBusSyncReply App::OnBusMessageSync(GstMessage *msg) {
 }
 
 GstFlowReturn App::OnNewSample(GstElement *element) {
-  GstSample *sample = NULL;
-  g_signal_emit_by_name(element, "pull-sample", &sample);
-  CHECK_NOTNULL(sample);
-
   mutex_.Lock();
   bool use_runner = use_runner_;
   mutex_.Unlock();
@@ -611,12 +647,14 @@ GstFlowReturn App::OnNewSample(GstElement *element) {
   // Note: don't ever memcpy the input buffer if avoidable. In both paths below
   // care is taken to avoid this performance bottleneck.
   if (use_runner) {
-    coral::PipelineTensor tensor;
-    tensor.data.data = allocator_.wrap(sample);
-    tensor.bytes = input_bytes_;
-    tensor.type = kTfLiteUInt8;
+    coral::PipelineTensor input_buffer;
+    const TfLiteTensor *input_tensor = interpreter_->input_tensor(0);
+    input_buffer.buffer =
+        runner_->GetInputTensorAllocator()->Alloc(input_tensor->bytes);
+    input_buffer.type = input_tensor->type;
+    input_buffer.bytes = input_tensor->bytes;
 
-    CHECK_EQ(runner_->Push({tensor}), true);
+    CHECK_EQ(runner_->Push({input_buffer}), true);
     mutex_.Lock();
     frames_in_tpu_queue_++;
     start_times_.push_front(std::chrono::steady_clock::now());
@@ -626,6 +664,9 @@ GstFlowReturn App::OnNewSample(GstElement *element) {
     mutex_.Unlock();
   } else {
     mutex_.Lock();
+    GstSample *sample = NULL;
+    g_signal_emit_by_name(element, "pull-sample", &sample);
+    CHECK_NOTNULL(sample);
     if (sample_) {
       gst_sample_unref(sample_);
     }
@@ -656,7 +697,7 @@ void App::ConsumeRunner() {
     mutex_.Unlock();
 
     const uint8_t *tensor_data =
-        static_cast<uint8_t *>(output_tensors[0].data.data);
+        static_cast<uint8_t *>(output_tensors[0].buffer->ptr());
     HandleOutput(tensor_data, inference_ms.count(), intra_ms.count());
 
     coral::FreeTensors(output_tensors, runner_->GetOutputTensorAllocator());

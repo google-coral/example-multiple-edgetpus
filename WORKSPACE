@@ -14,33 +14,55 @@
 workspace(name = "multiple_edgetpu_demo")
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 
-TENSORFLOW_COMMIT = "d855adfc5a0195788bf5f92c3c7352e638aa1109"
-TENSORFLOW_SHA256 = "b8a691dbea2bb028fa8f7ce407b70ad236dae0a8705c8010dc7bad8af7e93bac"
+TENSORFLOW_COMMIT = "48c3bae94a8b324525b45f157d638dfd4e8c3be1"
+# Command to calculate: curl -L <FILE-URL> | sha256sum | awk '{print $1}'
+TENSORFLOW_SHA256 = "363420a67b4cfa271cd21e5c8fac0d7d91b18b02180671c3f943c887122499d8"
 
+# These values come from the Tensorflow workspace. If the TF commit is updated,
+# these should be updated to match.
+IO_BAZEL_RULES_CLOSURE_COMMIT = "308b05b2419edb5c8ee0471b67a40403df940149"
+IO_BAZEL_RULES_CLOSURE_SHA256 = "5b00383d08dd71f28503736db0500b6fb4dda47489ff5fc6bed42557c07c6ba9"
+
+CORAL_CROSSTOOL_COMMIT = "142e930ac6bf1295ff3ba7ba2b5b6324dfb42839"
+CORAL_CROSSTOOL_SHA256 = "088ef98b19a45d7224be13636487e3af57b1564880b67df7be8b3b7eee4a1bfc"
+
+# Configure libedgetpu and downstream libraries (TF and Crosstool).
 http_archive(
-    name = "io_bazel_rules_closure",
-    sha256 = "5b00383d08dd71f28503736db0500b6fb4dda47489ff5fc6bed42557c07c6ba9",
-    strip_prefix = "rules_closure-308b05b2419edb5c8ee0471b67a40403df940149",
-    urls = [
-        "http://mirror.tensorflow.org/github.com/bazelbuild/rules_closure/archive/308b05b2419edb5c8ee0471b67a40403df940149.tar.gz",
-        "https://github.com/bazelbuild/rules_closure/archive/308b05b2419edb5c8ee0471b67a40403df940149.tar.gz",  # 2019-06-13
-    ],
+  name = "libedgetpu",
+  sha256 = "d76d18c5a96758dd620057028cdd4e129bd885480087a5c7334070bba3797e58",
+  strip_prefix = "libedgetpu-14eee1a076aa1af7ec1ae3c752be79ae2604a708",
+  urls = [
+    "https://github.com/google-coral/libedgetpu/archive/14eee1a076aa1af7ec1ae3c752be79ae2604a708.tar.gz"
+  ],
 )
 
-http_archive(
-    name = "bazel_skylib",
-    sha256 = "1dde365491125a3db70731e25658dfdd3bc5dbdfd11b840b3e987ecf043c7ca0",
-    urls = ["https://github.com/bazelbuild/bazel-skylib/releases/download/0.9.0/bazel_skylib-0.9.0.tar.gz"],
-) 
+load("@libedgetpu//:workspace.bzl", "libedgetpu_dependencies")
+libedgetpu_dependencies(TENSORFLOW_COMMIT, TENSORFLOW_SHA256,
+                        IO_BAZEL_RULES_CLOSURE_COMMIT,IO_BAZEL_RULES_CLOSURE_SHA256,
+                        CORAL_CROSSTOOL_COMMIT,CORAL_CROSSTOOL_SHA256)
 
 http_archive(
+  name = "libcoral",
+  sha256 = "ec0e1dfd4412b3c32f7ceac7b4507d0d084173229ef17f692a4ce95342731f58",
+  strip_prefix = "libcoral-982426546dfa10128376d0c24fd8a8b161daac97",
+  urls = [
+    "https://github.com/google-coral/libcoral/archive/982426546dfa10128376d0c24fd8a8b161daac97.tar.gz"
+  ],
+)
+
+new_local_repository(
+    name = "local",
+    path = "/usr",
+    build_file = "third_party/local/BUILD",
+)
+# External Dependencies
+http_archive(
     name = "glog",
-    sha256 = "835888ec47ee8065b3098f3ec4373717d641954970f009833ed6d466c397409a",
-    strip_prefix = "glog-41f4bf9cbc3e8995d628b459f6a239df43c2b84a",
+    sha256 = "6fc352c434018b11ad312cd3b56be3597b4c6b88480f7bd4e18b3a3b2cf961aa",
+    strip_prefix = "glog-3ba8976592274bc1f907c402ce22558011d6fc5e",
     urls = [
-        "https://github.com/google/glog/archive/41f4bf9cbc3e8995d628b459f6a239df43c2b84a.tar.gz",
+        "https://github.com/google/glog/archive/3ba8976592274bc1f907c402ce22558011d6fc5e.tar.gz",
     ],
     build_file_content = """
 licenses(['notice'])
@@ -50,60 +72,8 @@ glog_library(with_gflags=0)
 """,
 )
 
-http_archive(
-    name = "org_tensorflow",
-    sha256 = TENSORFLOW_SHA256,
-    strip_prefix = "tensorflow-" + TENSORFLOW_COMMIT,
-    urls = [
-        "https://github.com/tensorflow/tensorflow/archive/" + TENSORFLOW_COMMIT + ".tar.gz",
-    ],
-)
-
 load("@org_tensorflow//tensorflow:workspace.bzl", "tf_workspace")
 tf_workspace(tf_repo_name = "org_tensorflow")
-
-git_repository(
-    name = "libedgetpu",
-    commit = "f8cac1044e3ca32b6a9c8712ac6d063e58f19fe1",
-    remote = "https://github.com/google-coral/libedgetpu",
-)
-
-new_local_repository(
-    name = "libusb",
-    path = "/usr/include/",
-    build_file_content = """
-cc_library(
-  name = "headers",
-  includes = ["."],
-  hdrs = ["libusb-1.0/libusb.h"],
-  visibility = ["//visibility:public"],
-)
-"""
-)
-
-http_archive(
-    name = "edgetpu",
-    sha256 = "29a8cd7e6d3fc90cbe8a8025b51c3fed5bd56c79c6a9b09b5833e349f66a829b",
-    strip_prefix = "edgetpu-c48c88871fd3d2e10d298126cd6a08b88d22496c",
-    urls = [
-        "https://github.com/google-coral/edgetpu/archive/c48c88871fd3d2e10d298126cd6a08b88d22496c.tar.gz",
-    ]
-)
-
-new_local_repository(
-    name = "local",
-    path = "/usr",
-    build_file = "third_party/local/BUILD",
-)
-
-http_archive(
-    name = "coral_crosstool",
-    sha256 = "088ef98b19a45d7224be13636487e3af57b1564880b67df7be8b3b7eee4a1bfc",
-    strip_prefix = "crosstool-142e930ac6bf1295ff3ba7ba2b5b6324dfb42839",
-    urls = [
-        "https://github.com/google-coral/crosstool/archive/142e930ac6bf1295ff3ba7ba2b5b6324dfb42839.tar.gz",
-    ],
-)
 
 load("@coral_crosstool//:configure.bzl", "cc_crosstool")
 cc_crosstool(name = "crosstool", additional_system_include_directories=["//docker/include"])

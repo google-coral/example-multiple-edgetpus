@@ -41,6 +41,7 @@ BAZEL_BUILD_FLAGS := --crosstool_top=@crosstool//:toolchains \
                      --cpu=$(CPU) \
                      --experimental_repo_remote_exec
 
+BAZEL_BUILD_FLAGS += --linkopt=-l:libusb-1.0.so
 ifeq ($(COMPILATION_MODE), opt)
 BAZEL_BUILD_FLAGS += --linkopt=-Wl,--strip-all
 else ifeq ($(COMPILATION_MODE), dbg)

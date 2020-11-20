@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y \
   libgtk-3-dev:armhf \
   python \
   python3-all \
+  python3-numpy \
   python3-six \
   zlib1g-dev \
   zlib1g-dev:armhf \

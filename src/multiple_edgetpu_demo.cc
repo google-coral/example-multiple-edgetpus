@@ -37,6 +37,7 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/substitute.h"
 #include "absl/synchronization/mutex.h"
+#include "coral/error_reporter.h"
 #include "coral/pipeline/pipelined_model_runner.h"
 #include "glog/logging.h"
 #include "tensorflow/lite/interpreter.h"
@@ -217,7 +218,8 @@ class App {
 
  private:
   static std::unique_ptr<tflite::Interpreter> InitializeInterpreter(
-      tflite::FlatBufferModel *model, edgetpu::EdgeTpuContext *context);
+      tflite::FlatBufferModel *model, edgetpu::EdgeTpuContext *context,
+      coral::EdgeTpuErrorReporter *error_reporter);
 
   void InitializeInference();
   void InitializeGstreamer();
@@ -238,6 +240,7 @@ class App {
   std::vector<std::unique_ptr<tflite::Interpreter>> segment_interpreters_;
   std::unique_ptr<coral::PipelinedModelRunner> runner_;
   std::unique_ptr<tflite::Interpreter> interpreter_;
+  coral::EdgeTpuErrorReporter error_reporter_;
   std::deque<std::chrono::time_point<std::chrono::steady_clock>> start_times_;
   GstElement *pipeline_ = nullptr;
   GstElement *glsink_ = nullptr;
@@ -291,10 +294,11 @@ App::~App() {
 }
 
 std::unique_ptr<tflite::Interpreter> App::InitializeInterpreter(
-    tflite::FlatBufferModel *model, edgetpu::EdgeTpuContext *context) {
+    tflite::FlatBufferModel *model, edgetpu::EdgeTpuContext *context,
+    coral::EdgeTpuErrorReporter *error_reporter) {
   tflite::ops::builtin::BuiltinOpResolver resolver;
   resolver.AddCustom(edgetpu::kCustomOp, edgetpu::RegisterCustomOp());
-  tflite::InterpreterBuilder builder(model->GetModel(), resolver);
+  tflite::InterpreterBuilder builder(model->GetModel(), resolver, error_reporter);
   std::unique_ptr<tflite::Interpreter> interpreter;
   CHECK_EQ(builder(&interpreter), kTfLiteOk);
   interpreter->SetExternalContext(kTfLiteEdgeTpuContext, context);
@@ -343,8 +347,8 @@ void App::InitializeInference() {
   for (size_t i = 0; i < num_segments; ++i) {
     models_.push_back(CHECK_NOTNULL(tflite::FlatBufferModel::BuildFromFile(
         model_path_segments[i].c_str())));
-    segment_interpreters_[i] =
-        InitializeInterpreter(models_[i].get(), edgetpu_contexts_[i].get());
+      segment_interpreters_[i] = InitializeInterpreter(models_[i].get(),
+		      edgetpu_contexts_[i].get(), &error_reporter_);
     runner_interpreters[i] = segment_interpreters_[i].get();
     std::cout << model_path_segments[i] << " loaded" << std::endl;
   }
@@ -355,7 +359,8 @@ void App::InitializeInference() {
   models_.push_back(CHECK_NOTNULL(
       tflite::FlatBufferModel::BuildFromFile(full_model_path.c_str())));
   interpreter_ = InitializeInterpreter(models_.back().get(),
-                                       edgetpu_contexts_[pci_index].get());
+                                       edgetpu_contexts_[pci_index].get(),
+				       &error_reporter_);
   std::cout << "Full model " << full_model_path << " loaded for "
             << all_tpus[pci_index].path << std::endl;
 
@@ -652,6 +657,7 @@ GstFlowReturn App::OnNewSample(GstElement *element) {
         runner_->GetInputTensorAllocator()->Alloc(input_tensor->bytes);
     input_buffer.type = input_tensor->type;
     input_buffer.bytes = input_tensor->bytes;
+    input_buffer.name = input_tensor->name;
 
     CHECK(runner_->Push({input_buffer}).ok());
     mutex_.Lock();
@@ -754,7 +760,7 @@ void App::FeedInterpreter() {
       CHECK_EQ(tensor->data.raw, reinterpret_cast<char *>(info.data));
       gst_buffer_unmap(buffer, &info);
 
-      CHECK_EQ(interpreter_->Invoke(), kTfLiteOk);
+      CHECK_EQ(interpreter_->Invoke(), kTfLiteOk) << error_reporter_.message();
       std::chrono::duration<double, std::milli> inference_ms =
           std::chrono::steady_clock::now() - start_time;
       mutex_.Lock();

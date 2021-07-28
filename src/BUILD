@@ -20,6 +20,7 @@ cc_binary(
         "@local//:gstreamer",
         "@local//:gstallocators",
         "@local//:gtk",
+        "@libcoral//coral:error_reporter",
         "@libcoral//coral/pipeline:pipelined_model_runner",
         "@libedgetpu//tflite/public:oss_edgetpu_direct_all",
         "@org_tensorflow//tensorflow/lite:framework",

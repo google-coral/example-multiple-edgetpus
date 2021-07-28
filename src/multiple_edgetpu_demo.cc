@@ -38,7 +38,6 @@
 #include "absl/strings/substitute.h"
 #include "absl/synchronization/mutex.h"
 #include "coral/pipeline/pipelined_model_runner.h"
-#include "coral/pipeline/utils.h"
 #include "glog/logging.h"
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
@@ -654,7 +653,7 @@ GstFlowReturn App::OnNewSample(GstElement *element) {
     input_buffer.type = input_tensor->type;
     input_buffer.bytes = input_tensor->bytes;
 
-    CHECK_EQ(runner_->Push({input_buffer}), true);
+    CHECK(runner_->Push({input_buffer}).ok());
     mutex_.Lock();
     frames_in_tpu_queue_++;
     start_times_.push_front(std::chrono::steady_clock::now());
@@ -680,7 +679,7 @@ GstFlowReturn App::OnNewSample(GstElement *element) {
 
 void App::ConsumeRunner() {
   std::vector<coral::PipelineTensor> output_tensors;
-  while (runner_->Pop(&output_tensors)) {
+  while (runner_->Pop(&output_tensors).ok()) {
     CHECK_EQ(output_tensors.size(), static_cast<size_t>(1));
 
     mutex_.Lock();
@@ -700,7 +699,9 @@ void App::ConsumeRunner() {
         static_cast<uint8_t *>(output_tensors[0].buffer->ptr());
     HandleOutput(tensor_data, inference_ms.count(), intra_ms.count());
 
-    coral::FreeTensors(output_tensors, runner_->GetOutputTensorAllocator());
+    for (const auto& tensor : output_tensors) {
+        runner_->GetOutputTensorAllocator()->Free(tensor.buffer);
+    }
     output_tensors.clear();
   }
 }

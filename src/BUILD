@@ -21,7 +21,6 @@ cc_binary(
         "@local//:gstallocators",
         "@local//:gtk",
         "@libcoral//coral/pipeline:pipelined_model_runner",
-        "@libcoral//coral/pipeline:utils",
         "@libedgetpu//tflite/public:oss_edgetpu_direct_all",
         "@org_tensorflow//tensorflow/lite:framework",
         "@org_tensorflow//tensorflow/lite/kernels:builtin_ops",

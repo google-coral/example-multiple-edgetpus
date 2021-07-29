@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y \
   git \
   vim
 
-ARG BAZEL_VERSION=2.1.0
+ARG BAZEL_VERSION=4.0.0
 RUN wget -O /bazel https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-linux-x86_64.sh && \
     bash /bazel && \
     rm -f /bazel
